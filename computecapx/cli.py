@@ -37,7 +37,7 @@ def load_config():
 
 def cmd_login(args):
     """Handles the authentication and configuration setup."""
-    backend_url = args.url or "http://127.0.0.1:8000/api/v1"
+    backend_url = args.url or "https://api.computecapx.com/api/v1"
     save_config(api_key=args.key, backend_url=backend_url, project_id=args.project)
     print("Authentication credentials verified and stored.")
 

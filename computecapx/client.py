@@ -51,7 +51,7 @@ class ComputeCapClient:
     Handles secure, asynchronous transmission of telemetry data to the ComputeCap backend.
     """
     
-    DEFAULT_API_URL = "http://127.0.0.1:8000/api/v1"
+    DEFAULT_API_URL = "https://api.computecapx.com/api/v1"
     
     def __init__(self, api_key: Optional[str] = None, backend_url: Optional[str] = None):
         # Read the CLI configuration file fallbacks

@@ -581,25 +581,51 @@ class ComputeCapTelemetry:
 
     def instrument_non_http_sdks(self) -> None:
         """
-        Dynamically catches non-HTTP SDKs (like Gemini) via strings without hardcoding imports [10].
-        This ensures Zero Pylance errors and zero forced dependencies.
+        Dynamically catches non-HTTP SDKs (like Gemini) via sys.meta_path.
+        This ensures Zero Pylance errors, zero forced dependencies, and avoids brittle builtins patching.
         """
-        original_import = builtins.__import__
+        try:
+            if "google.generativeai" in sys.modules:
+                genai_mod = sys.modules["google.generativeai"]
+                if not getattr(genai_mod, "_computecap_patched", False):
+                    if self.instrument_gemini(genai_mod):
+                        setattr(genai_mod, "_computecap_patched", True)
 
-        def custom_import(name, globals=None, locals=None, fromlist=(), level=0):
-            module = original_import(name, globals, locals, fromlist, level)
-            try:
-                # Dynamically check Python's memory cache for the loaded library
-                if "google.generativeai" in sys.modules:
-                    genai_mod = sys.modules["google.generativeai"]
-                    if not getattr(genai_mod, "_computecap_patched", False):
-                        if self.instrument_gemini(genai_mod):
-                            setattr(genai_mod, "_computecap_patched", True)
-            except Exception:
-                pass
-            return module
+            import importlib.abc
+            import importlib.util
 
-        builtins.__import__ = custom_import
+            telemetry_engine = self
+
+            class GeminiPostImportFinder(importlib.abc.MetaPathFinder):
+                def find_spec(self_, fullname, path, target=None):
+                    if fullname == "google.generativeai":
+                        sys.meta_path.remove(self_)
+                        try:
+                            spec = importlib.util.find_spec(fullname)
+                            if spec and spec.loader:
+                                original_loader = spec.loader
+                                
+                                class PostImportLoader(importlib.abc.Loader):
+                                    def create_module(self__, spec):
+                                        if hasattr(original_loader, 'create_module'):
+                                            return original_loader.create_module(spec)
+                                        return None
+
+                                    def exec_module(self__, module):
+                                        original_loader.exec_module(module)
+                                        if not getattr(module, "_computecap_patched", False):
+                                            if telemetry_engine.instrument_gemini(module):
+                                                setattr(module, "_computecap_patched", True)
+
+                                spec.loader = PostImportLoader()
+                            return spec
+                        finally:
+                            sys.meta_path.insert(0, self_)
+                    return None
+
+            sys.meta_path.insert(0, GeminiPostImportFinder())
+        except Exception:
+            pass
 
     def instrument_universal_http(self) -> None:
         """Universal Interceptor for all REST-based AI APIs."""
