@@ -1,4 +1,4 @@
-# sdk/computecapx/detector.py: Universal autonomous cloud environment detection.
+"""Autonomous cloud environment detection for the ComputeCapX SDK."""
 
 import os
 import requests
@@ -130,7 +130,7 @@ class EnvironmentDetector:
 
     @staticmethod
     def _ping_oci() -> Optional[Dict[str, str]]:
-        """Detects Oracle Cloud Infrastructure (OCI) natively [10]."""
+        """Detects Oracle Cloud Infrastructure (OCI) via the OPCv2 metadata endpoint."""
         try:
             # OCI requires the 'Authorization: Bearer Oracle' header for metadata v2
             headers = {"Authorization": "Bearer Oracle"}

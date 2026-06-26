@@ -1,4 +1,4 @@
-# sdk/computecapx/cli.py: Command-line interface for SDK configuration and diagnostics.
+"""Command-line interface for ComputeCapX SDK configuration and diagnostics."""
 
 import argparse
 import os

@@ -1,4 +1,4 @@
-# sdk/computecapx/run.py: Automated Zero-Code execution wrapper.
+"""Zero-code CLI execution wrapper for the ComputeCapX SDK."""
 
 import sys
 import os
@@ -66,7 +66,7 @@ def main():
             print("[COMPUTECAPX] Local environment detected. Auto-disabling Cloud Telemetry heartbeat.")
             no_cloud = True
 
-    # Boot SDK telemetry (Automatically sets up Pre-Import Caches and HTTP interceptors) [10]
+    # Activate SDK telemetry before executing the target script
     instrument(
         api_key=api_key,
         project_id=project_id,

@@ -1,4 +1,4 @@
-# sdk/computecapx/wrapper.py: Universal AI API instrumentation layer.
+"""Universal AI API instrumentation layer for the ComputeCapX SDK."""
 
 import os
 import time
@@ -8,14 +8,12 @@ import functools
 import collections
 import json
 import urllib.parse
-import builtins
 import sys
 from typing import Any, Optional, List, Dict, Tuple
-import psutil 
+import psutil
 import contextvars
 import asyncio
 import uuid
-import time
 
 trace_ctx: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar('computecapx_trace_ctx', default=None)
 
@@ -629,6 +627,97 @@ class ComputeCapTelemetry:
 
     def instrument_universal_http(self) -> None:
         """Universal Interceptor for all REST-based AI APIs."""
+
+        def _parse_sse_usage(content_bytes: bytes) -> Tuple[int, int]:
+            """
+            Parse a fully-buffered SSE stream and extract token usage.
+
+            Strategy (in priority order):
+              1. Explicit `usage` object in any chunk — exact counts.
+                 Works for: Anthropic always, OpenAI/Groq/Mistral when
+                 stream_options={"include_usage": true} is passed.
+              2. Anthropic event types: message_start (input) + message_delta (output).
+              3. Fallback: count chars in delta content across all chunks,
+                 then estimate output tokens as chars // 4.
+                 Works for: OpenAI streaming WITHOUT include_usage (default).
+
+            Returns (input_tokens, output_tokens).
+            """
+            t_in, t_out = 0, 0
+            output_chars = 0  # accumulated delta content length for estimation
+            try:
+                text = content_bytes.decode("utf-8", errors="ignore")
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(data_str)
+                        # ── Explicit usage (OpenAI with include_usage, Groq, Mistral) ──
+                        usage = chunk.get("usage")
+                        if usage and isinstance(usage, dict):
+                            t_in = usage.get("prompt_tokens") or usage.get("input_tokens") or t_in
+                            t_out = usage.get("completion_tokens") or usage.get("output_tokens") or t_out
+                        # ── OpenAI / Groq delta content → output char counting ──
+                        for choice in chunk.get("choices") or []:
+                            delta = choice.get("delta") or {}
+                            content = delta.get("content")
+                            if content and isinstance(content, str):
+                                output_chars += len(content)
+                        # ── Anthropic: message_start → input_tokens ──
+                        if chunk.get("type") == "message_start":
+                            msg_usage = chunk.get("message", {}).get("usage", {})
+                            if isinstance(msg_usage, dict):
+                                t_in = msg_usage.get("input_tokens") or t_in
+                        # ── Anthropic: message_delta → output_tokens ──
+                        if chunk.get("type") == "message_delta":
+                            delta_usage = chunk.get("usage", {})
+                            if isinstance(delta_usage, dict):
+                                t_out = delta_usage.get("output_tokens") or t_out
+                        # ── Anthropic: content_block_delta text → output char counting ──
+                        if chunk.get("type") == "content_block_delta":
+                            delta = chunk.get("delta") or {}
+                            if delta.get("type") == "text_delta":
+                                output_chars += len(delta.get("text") or "")
+                    except (json.JSONDecodeError, AttributeError):
+                        continue
+            except Exception:
+                pass
+            # If we still have no explicit output count, estimate from collected chars
+            if t_out == 0 and output_chars > 0:
+                t_out = max(1, output_chars // 4)
+            return t_in, t_out
+
+        def _estimate_input_tokens(body_bytes: bytes) -> int:
+            """
+            Estimate input token count from request body messages.
+            Used as a fallback for streaming calls where the SSE stream
+            does not include usage data (OpenAI default without include_usage).
+            Approximation: 1 token ≈ 4 characters.
+            """
+            try:
+                body = json.loads(body_bytes)
+                messages = body.get("messages") or []
+                total_chars = 0
+                for msg in messages:
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        total_chars += len(content)
+                    elif isinstance(content, list):
+                        for part in content:
+                            if isinstance(part, dict):
+                                total_chars += len(str(part.get("text") or part.get("content") or ""))
+                # Also count system prompt if present at top level
+                system = body.get("system")
+                if isinstance(system, str):
+                    total_chars += len(system)
+                return max(1, total_chars // 4) if total_chars > 0 else 0
+            except Exception:
+                return 0
+
         def _extract_ai_context(url_str: str, body_bytes: bytes) -> Tuple[Optional[str], Optional[str]]:
             try:
                 body = json.loads(body_bytes)
@@ -681,20 +770,28 @@ class ComputeCapTelemetry:
                 
                 if provider and model:
                     try:
-                        if response.status_code == 200 and "application/json" in response.headers.get("content-type", ""):
+                        content_type = response.headers.get("content-type", "")
+                        if response.status_code == 200 and "application/json" in content_type:
                             res_bytes = response.read()
                             data = json.loads(res_bytes)
-                            
-                            # Capture response text and update history
                             resp_text = _extract_response_text(data)
                             history = _request_history.get()
                             if history:
                                 history[-1]["response"] = resp_text
-
                             usage = data.get("usage") or data.get("usageMetadata") or data.get("x_groq", {}).get("usage")
                             if usage:
                                 t_in = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
                                 t_out = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+                                self._transmit(provider, model, t_in, t_out)
+                        elif response.status_code == 200 and "text/event-stream" in content_type:
+                            # Streaming response — buffer full SSE and parse usage
+                            stream_bytes = response.read()
+                            t_in, t_out = _parse_sse_usage(stream_bytes)
+                            # Fallback: OpenAI default streaming has no usage in SSE
+                            # — estimate input tokens from request body
+                            if t_in == 0:
+                                t_in = _estimate_input_tokens(body_bytes)
+                            if t_in > 0 or t_out > 0:
                                 self._transmit(provider, model, t_in, t_out)
                     except Exception:
                         pass
@@ -730,20 +827,27 @@ class ComputeCapTelemetry:
                 
                 if provider and model:
                     try:
-                        if response.status_code == 200 and "application/json" in response.headers.get("content-type", ""):
+                        content_type = response.headers.get("content-type", "")
+                        if response.status_code == 200 and "application/json" in content_type:
                             res_bytes = await response.aread()
                             data = json.loads(res_bytes)
-                            
-                            # Capture response text and update history
                             resp_text = _extract_response_text(data)
                             history = _request_history.get()
                             if history:
                                 history[-1]["response"] = resp_text
-
                             usage = data.get("usage") or data.get("usageMetadata") or data.get("x_groq", {}).get("usage")
                             if usage:
                                 t_in = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
                                 t_out = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+                                self._transmit(provider, model, t_in, t_out)
+                        elif response.status_code == 200 and "text/event-stream" in content_type:
+                            # Streaming response — buffer full SSE and parse usage
+                            stream_bytes = await response.aread()
+                            t_in, t_out = _parse_sse_usage(stream_bytes)
+                            # Fallback: estimate input tokens from request body
+                            if t_in == 0:
+                                t_in = _estimate_input_tokens(body_bytes)
+                            if t_in > 0 or t_out > 0:
                                 self._transmit(provider, model, t_in, t_out)
                     except Exception:
                         pass
@@ -782,25 +886,30 @@ class ComputeCapTelemetry:
                 
                 if provider and model:
                     try:
-                        if response.status_code == 200 and "application/json" in response.headers.get("content-type", ""):
+                        content_type = response.headers.get("content-type", "")
+                        if response.status_code == 200 and "application/json" in content_type:
                             data = response.json()
-
-                            # Extract usage stats from response body (must be assigned before guard below)
                             usage = (
                                 data.get("usage")
                                 or data.get("usageMetadata")
                                 or (data.get("x_groq") or {}).get("usage")
                             )
-
-                            # Capture response text and update history
                             resp_text = _extract_response_text(data)
                             history = _request_history.get()
                             if history:
                                 history[-1]["response"] = resp_text
-
                             if usage and _global_telemetry_engine:
                                 t_in = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
                                 t_out = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+                                _global_telemetry_engine._transmit(provider, model, t_in, t_out)
+                        elif response.status_code == 200 and "text/event-stream" in content_type:
+                            # Streaming response — buffer full SSE and parse usage
+                            stream_bytes = response.content  # .content buffers the full stream
+                            t_in, t_out = _parse_sse_usage(stream_bytes)
+                            # Fallback: estimate input tokens from request body
+                            if t_in == 0:
+                                t_in = _estimate_input_tokens(body_bytes)
+                            if (t_in > 0 or t_out > 0) and _global_telemetry_engine:
                                 _global_telemetry_engine._transmit(provider, model, t_in, t_out)
                     except Exception:
                         pass
@@ -873,8 +982,7 @@ class ComputeCapTelemetry:
                             "project_id": wrapper.project_id,
                             "provider": wrapper.environment.get("provider", "local"),
                             "resource_id": wrapper.environment.get("resource_id", "local"),
-                                "region": wrapper.environment.get("region", "unknown"),
-                                "provider": wrapper.environment.get("provider", "local"),
+                            "region": wrapper.environment.get("region", "unknown"),
                             "trace_id": _get_active_trace(),
                             "event_type": "network_call",
                             "service": f"{self_pool.scheme}://{self_pool.host}:{self_pool.port}",
@@ -935,9 +1043,8 @@ class ComputeCapTelemetry:
                             trace_payload = {
                                 "project_id": wrapper.project_id,
                                 "provider": wrapper.environment.get("provider", "local"),
-                            "resource_id": wrapper.environment.get("resource_id", "local"),
+                                "resource_id": wrapper.environment.get("resource_id", "local"),
                                 "region": wrapper.environment.get("region", "unknown"),
-                                "provider": wrapper.environment.get("provider", "local"),
                                 "trace_id": _get_active_trace(),
                                 "event_type": "database_call",
                                 "service": "sqlite3",
@@ -1003,9 +1110,8 @@ class ComputeCapTelemetry:
                             trace_payload = {
                                 "project_id": wrapper.project_id,
                                 "provider": wrapper.environment.get("provider", "local"),
-                            "resource_id": wrapper.environment.get("resource_id", "local"),
+                                "resource_id": wrapper.environment.get("resource_id", "local"),
                                 "region": wrapper.environment.get("region", "unknown"),
-                                "provider": wrapper.environment.get("provider", "local"),
                                 "trace_id": _get_active_trace(),
                                 "event_type": "database_call",
                                 "service": "postgresql",
@@ -1032,7 +1138,6 @@ class ComputeCapTelemetry:
         
     def instrument_crash_handler(self) -> None:
         """Hooks sys.excepthook to catch fatal crashes and emit a trace_end event."""
-        import traceback
         original_excepthook = sys.excepthook
         
         def intercepted_excepthook(exc_type, exc_value, exc_traceback):
@@ -1043,9 +1148,8 @@ class ComputeCapTelemetry:
                     err_payload = {
                         "project_id": wrapper.project_id,
                         "provider": wrapper.environment.get("provider", "local"),
-                            "resource_id": wrapper.environment.get("resource_id", "local"),
-                                "region": wrapper.environment.get("region", "unknown"),
-                                "provider": wrapper.environment.get("provider", "local"),
+                        "resource_id": wrapper.environment.get("resource_id", "local"),
+                        "region": wrapper.environment.get("region", "unknown"),
                         "trace_id": _get_active_trace(),
                         "event_type": "internal_error",
                         "service": "python_runtime",
@@ -1060,8 +1164,7 @@ class ComputeCapTelemetry:
                         "project_id": wrapper.project_id,
                         "provider": wrapper.environment.get("provider", "local"),
                         "resource_id": wrapper.environment.get("resource_id", "local"),
-                                "region": wrapper.environment.get("region", "unknown"),
-                                "provider": wrapper.environment.get("provider", "local"),
+                        "region": wrapper.environment.get("region", "unknown"),
                         "trace_id": _get_active_trace(),
                         "event_type": "trace_end",
                         "status": "fatal_crash"
@@ -1076,28 +1179,63 @@ class ComputeCapTelemetry:
         sys.excepthook = intercepted_excepthook
 
 def instrument(
-    api_key: str, 
-    project_id: str, 
+    api_key: Optional[str] = None,
+    project_id: Optional[str] = None,
     claim_infrastructure: bool = True,
     instrument_ai: bool = True,
-    backend_url: Optional[str] = None
+    backend_url: Optional[str] = None,
 ) -> ComputeCapClient:
     """
-    Primary entry point to activate telemetry instrumentation and project policies.
+    Activate ComputeCapX telemetry instrumentation.
+
+    Credentials are resolved in this order:
+      1. Direct argument (``api_key``, ``project_id``)
+      2. Environment variables (``COMPUTECAPX_API_KEY``, ``COMPUTECAPX_PROJECT_ID``)
+      3. CLI config file persisted by ``computecapx login``
+
+    This means you can call ``computecapx.instrument()`` with no arguments
+    if the environment variables are set (e.g. via a ``.env`` file loaded
+    by ``python-dotenv``).
+
+    Args:
+        api_key: Your ComputeCapX SDK API key.
+        project_id: Your ComputeCapX project ID.
+        claim_infrastructure: Send cloud infrastructure heartbeats. Disable for local dev.
+        instrument_ai: Intercept AI API calls and enforce budget/loop policies.
+        backend_url: Override the backend URL (for self-hosted instances).
+
+    Returns:
+        A configured :class:`ComputeCapClient` instance.
     """
+    from .client import _load_persisted_config
+    stored_config = _load_persisted_config()
+
+    # Credential resolution: direct arg -> env var -> CLI config file
+    resolved_api_key: Optional[str] = (
+        api_key
+        or os.getenv("COMPUTECAPX_API_KEY")
+        or stored_config.get("api_key")
+    )
+    resolved_project_id: str = (
+        project_id
+        or os.getenv("COMPUTECAPX_PROJECT_ID")
+        or stored_config.get("project_id")
+        or ""
+    )
+
     global _global_telemetry_engine
-    client = ComputeCapClient(api_key=api_key, backend_url=backend_url)
-    telemetry_engine = ComputeCapTelemetry(client, project_id)
+    client = ComputeCapClient(api_key=resolved_api_key, backend_url=backend_url)
+    telemetry_engine = ComputeCapTelemetry(client, resolved_project_id)
     _global_telemetry_engine = telemetry_engine
-    
+
     if claim_infrastructure:
         telemetry_engine.claim_resource(continuous=True)
-        
+
     if instrument_ai:
         telemetry_engine.instrument_universal_http()
         telemetry_engine.instrument_crash_handler()
-        
-        # Catch any non-HTTP outlier SDKs (like Gemini) via dynamic string detection [10]
+
+        # Catch any non-HTTP SDKs (like Gemini) via dynamic import hook
         telemetry_engine.instrument_non_http_sdks()
-        
+
     return client

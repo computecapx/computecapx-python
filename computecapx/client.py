@@ -1,4 +1,4 @@
-# sdk/computecapx/client.py: Secure HTTP client for telemetry transmission.
+"""Secure, non-blocking HTTP client for ComputeCapX telemetry transmission."""
 
 import os
 import json
@@ -60,14 +60,14 @@ class ComputeCapClient:
         # 1. Resolve API Key: Constructor parameter -> Environment Variable -> CLI JSON Stored Config
         self.api_key = (
             api_key 
-            or os.getenv("COMPUTECAPX_API_KEY") # Updated to COMPUTECAPX_ [10]
+            or os.getenv("COMPUTECAPX_API_KEY")
             or stored_config.get("api_key")
         )
         
         # 2. Resolve Backend URL: Constructor parameter -> Environment Variable -> CLI JSON Stored Config -> Local Fallback
         self.backend_url = (
             backend_url 
-            or os.getenv("COMPUTECAPX_BACKEND_URL") # Updated to COMPUTECAPX_ [10]
+            or os.getenv("COMPUTECAPX_BACKEND_URL")
             or stored_config.get("backend_url") 
             or self.DEFAULT_API_URL
         )
