@@ -1,0 +1,3 @@
+# PEP 561 — Typed Package Marker
+# This empty file signals to type checkers (mypy, pyright, pylance)
+# that this package ships with inline type annotations.

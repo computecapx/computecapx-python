@@ -14,6 +14,10 @@ import psutil
 import contextvars
 import asyncio
 import uuid
+import logging
+
+_logger = logging.getLogger(__name__)
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 trace_ctx: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar('computecapx_trace_ctx', default=None)
 
@@ -22,7 +26,7 @@ _global_telemetry_engine = None
 def _get_active_trace() -> str:
     ctx = trace_ctx.get()
     now = time.time()
-    # 60 sec expiry ensures trace resets automatically for ThreadPool workers
+    # Traces auto-reset after 60 seconds to prevent context bleed across ThreadPool workers.
     if ctx is None or (now - ctx['started_at']) > 60.0:
         ctx = {
             "trace_id": f"txn_{uuid.uuid4().hex[:12]}",
@@ -316,15 +320,11 @@ class ComputeCapTelemetry:
                     "time_window_seconds": int(net_window)
                 }
                 self.client._send_async("telemetry/ai/emergency", emergency_payload)
-                print(
-                    f"\n\033[91m[ComputeCapX] CRITICAL: Runaway AI Loop detected in isolated context!\033[0m",
-                    file=sys.stderr
+                _logger.critical(
+                    "[ComputeCapX] CRITICAL: Runaway AI Loop detected. "
+                    "20 requests to %s (%s) attempted in %.2fs. Task permanently blocked.",
+                    provider.upper(), model, net_window
                 )
-                print(
-                    f"\033[93m[ComputeCapX] 20 requests to {provider.upper()} ({model}) attempted in {net_window:.2f}s. Task permanently blocked.\033[0m\n",
-                    file=sys.stderr
-                )
-                sys.stderr.flush()
                 history.clear()
                 raise ComputeCapRunawayLoopError(
                     f"CRITICAL: Runaway AI Loop detected in isolated context. "
@@ -335,7 +335,9 @@ class ComputeCapTelemetry:
         elif count >= 10:
             net_window = get_net_elapsed(count - 10)
             if net_window < 20.0:
-                print(f"[\033[93mComputeCapX\033[0m] WARNING: Rapid AI loop detected. Applying 5s mitigation throttle.")
+                _logger.warning(
+                    "[ComputeCapX] Rapid AI loop detected. Applying 5s mitigation throttle."
+                )
                 throttle_payload = {
                     "project_id": self.project_id,
                     "provider": provider,
@@ -353,7 +355,9 @@ class ComputeCapTelemetry:
         elif count >= 5:
             net_window = get_net_elapsed(count - 5)
             if net_window < 10.0:
-                print(f"[\033[93mComputeCapX\033[0m] WARNING: Fast AI usage detected. Applying 2s warning throttle.")
+                _logger.warning(
+                    "[ComputeCapX] Fast AI usage detected. Applying 2s warning throttle."
+                )
                 throttle_payload = {
                     "project_id": self.project_id,
                     "provider": provider,
@@ -371,22 +375,21 @@ class ComputeCapTelemetry:
         return 0.0
 
     def _check_budget_and_raise(self, provider: str = "unknown", model: str = "unknown") -> None:
-        """Helper to check the AI budget limit and print a prominent terminal warning if exceeded."""
+        """Check the AI budget limit and raise ComputeCapBudgetExceededError if exceeded."""
         if not self.client.check_budget_sync(self.project_id, provider=provider, model=model):
-            print(
-                "\n\033[91m[ComputeCapX] CRITICAL: Workspace monthly AI budget limit reached.\033[0m", 
-                file=sys.stderr
+            _logger.critical(
+                "[ComputeCapX] CRITICAL: Monthly AI budget limit reached. "
+                "Request blocked to prevent cost overruns. "
+                "Update your budget limit in the dashboard to continue."
             )
-            print(
-                "\033[93m[ComputeCapX] API request blocked to prevent cost overruns. Please update your budget limit in the dashboard to continue.\033[0m\n", 
-                file=sys.stderr
-            )
-            sys.stderr.flush()
             raise ComputeCapBudgetExceededError("ComputeCap Active Block: Project budget limit exceeded.")
 
     def _transmit(self, provider: str, model: str, t_in: int, t_out: int):
         try:
-            print(f"[\033[92mComputeCapX\033[0m] AI Request Detected -> \033[96m{provider.upper()}\033[0m | Model: \033[93m{model}\033[0m | Tokens: {t_in} In / {t_out} Out")
+            _logger.debug(
+                "[ComputeCapX] AI request: %s | model: %s | tokens_in: %d | tokens_out: %d",
+                provider.upper(), model, t_in, t_out
+            )
             telemetry_payload = {
                 "project_id": self.project_id,
                 "trace_id": _get_active_trace(),
@@ -492,7 +495,8 @@ class ComputeCapTelemetry:
                 try:
                     if interval_seconds <= 0:
                         break
-                    # Startup Booster: send second pulse after 15 seconds to update dynamic active values, then settle into 300 seconds
+                    # Send a follow-up heartbeat at 15 seconds to capture post-startup metrics,
+                    # then settle into the regular interval.
                     sleep_time = 15 if pulses_sent == 1 else interval_seconds
                     time.sleep(sleep_time)
                 except Exception:
@@ -509,7 +513,7 @@ class ComputeCapTelemetry:
                 pass
 
     def instrument_gemini(self, module: Any) -> bool:
-        """Proprietary patch for Google Gemini's gRPC binary protocol."""
+        """Patches the Google Gemini Python SDK to intercept generate_content calls for cost tracking."""
         patched_anything = False
         try:
             if hasattr(module, "GenerativeModel"):
@@ -579,8 +583,9 @@ class ComputeCapTelemetry:
 
     def instrument_non_http_sdks(self) -> None:
         """
-        Dynamically catches non-HTTP SDKs (like Gemini) via sys.meta_path.
-        This ensures Zero Pylance errors, zero forced dependencies, and avoids brittle builtins patching.
+        Instruments non-HTTP SDKs (such as Gemini) via sys.meta_path hooks.
+        This avoids brittle builtins patching and does not require the target package
+        to be installed at import time.
         """
         try:
             if "google.generativeai" in sys.modules:
@@ -924,7 +929,7 @@ class ComputeCapTelemetry:
             original_urlopen = urllib3.connectionpool.HTTPConnectionPool.urlopen
 
             def intercepted_urlopen(self_pool, method, url, body=None, headers=None, *args, **kwargs):
-                # Do NOT intercept our own telemetry requests to the BurnGuard backend!
+                # Skip interception of outbound telemetry requests to the ComputeCapX backend.
                 wrapper = _global_telemetry_engine
                 if wrapper and wrapper.client:
                     import urllib.parse
@@ -1004,7 +1009,7 @@ class ComputeCapTelemetry:
             pass
 
         # ---------------------------------------------------------
-        # Database Interceptors for Micro-Attribution (Layer 1)
+        # Database Query Interceptors
         # ---------------------------------------------------------
         try:
             import sqlite3
@@ -1159,7 +1164,7 @@ class ComputeCapTelemetry:
                     }
                     wrapper.client.record_trace_event(err_payload)
                     
-                    # Emit explicit trace_end to instantly trigger Reconstruction
+                    # Emit a trace_end event to mark the crash as terminal.
                     end_payload = {
                         "project_id": wrapper.project_id,
                         "provider": wrapper.environment.get("provider", "local"),

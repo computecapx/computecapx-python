@@ -12,13 +12,12 @@ class EnvironmentDetector:
     Executes with extremely low timeouts to prevent latency in local or unsupported environments.
     """
     
-    # 1.0s timeout ensures 100% accurate cloud detection even under heavy boot CPU load [10]
+    # Short timeout prevents latency in non-cloud or unsupported environments.
     METADATA_TIMEOUT = 1.0  
 
     @staticmethod
     def _ping_aws() -> Optional[Dict[str, str]]:
         try:
-            # 1. Fetch AWS IMDSv2 Token (Required for modern EC2 instances)
             token_res = requests.put(
                 "http://169.254.169.254/latest/api/token",
                 headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
@@ -29,7 +28,6 @@ class EnvironmentDetector:
             if token_res.status_code == 200:
                 headers["X-aws-ec2-metadata-token"] = token_res.text
 
-            # 2. Grab Instance ID
             res = requests.get(
                 "http://169.254.169.254/latest/meta-data/instance-id", 
                 headers=headers,
@@ -39,7 +37,6 @@ class EnvironmentDetector:
             if res.status_code == 200 and res.text.startswith("i-"):
                 region, instance_type = "us-east-1", "unknown"
                 try:
-                    # 3. Grab Region & Instance Type
                     reg_res = requests.get("http://169.254.169.254/latest/meta-data/placement/region", headers=headers, timeout=EnvironmentDetector.METADATA_TIMEOUT)
                     if reg_res.status_code == 200:
                         region = reg_res.text
@@ -81,7 +78,6 @@ class EnvironmentDetector:
     @staticmethod
     def _ping_gcp() -> Optional[Dict[str, str]]:
         try:
-            # GCP requires a specific header for metadata access
             headers = {"Metadata-Flavor": "Google"}
             res = requests.get(
                 "http://metadata.google.internal/computeMetadata/v1/instance/id", 
@@ -93,12 +89,10 @@ class EnvironmentDetector:
                 try:
                     zone_res = requests.get("http://metadata.google.internal/computeMetadata/v1/instance/zone", headers=headers, timeout=EnvironmentDetector.METADATA_TIMEOUT)
                     if zone_res.status_code == 200:
-                        # Format is typically projects/12345/zones/us-central1-a
                         zone = zone_res.text.split('/')[-1]
                         
                     type_res = requests.get("http://metadata.google.internal/computeMetadata/v1/instance/machine-type", headers=headers, timeout=EnvironmentDetector.METADATA_TIMEOUT)
                     if type_res.status_code == 200:
-                        # Format is typically projects/12345/machineTypes/e2-micro
                         instance_type = type_res.text.split('/')[-1]
                 except Exception:
                     pass
@@ -110,7 +104,6 @@ class EnvironmentDetector:
     @staticmethod
     def _ping_azure() -> Optional[Dict[str, str]]:
         try:
-            # Azure requires the Metadata header
             res = requests.get(
                 "http://169.254.169.254/metadata/instance?api-version=2021-02-01", 
                 headers={"Metadata": "true"},
@@ -119,7 +112,7 @@ class EnvironmentDetector:
             if res.status_code == 200:
                 data = res.json().get('compute', {})
                 r_id = data.get('resourceId', 'azure-instance')
-                # Azure Terminator requires Resource Group Name, passed via 'region' parameter
+                # Resource Group Name is used as the region identifier for Azure resources.
                 r_group = data.get('resourceGroupName', 'unknown-group')
                 instance_type = data.get('vmSize', 'unknown')
                 

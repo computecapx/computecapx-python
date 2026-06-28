@@ -9,7 +9,11 @@ import queue
 from pathlib import Path
 import requests
 import atexit
+import logging
 from typing import Dict, Any, Optional, List
+
+_logger = logging.getLogger(__name__)
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 def _load_persisted_config() -> Dict[str, str]:
     """Helper to safely retrieve CLI-persisted configuration from the user's home directory."""
@@ -221,7 +225,7 @@ class ComputeCapClient:
         Sends a 0-cost diagnostic pulse. If the backend Firewall is active, it returns 403.
         """
         if not self._require_preflight and self._has_done_initial_check:
-            # FAST PATH: Budget is far from limit, skip preflight check entirely!
+            # Fast path: budget check is not required, skip the network round-trip.
             return True
             
         self._has_done_initial_check = True
@@ -230,7 +234,6 @@ class ComputeCapClient:
             return True # Fail open if no API key is provided
             
         try:
-            # The "Zero-Cost Ping" payload
             payload = {
                 "project_id": project_id,
                 "provider": provider,
@@ -244,15 +247,14 @@ class ComputeCapClient:
                 f"{self.backend_url}/telemetry/ai",
                 json=payload,
                 headers=self._get_headers(),
-                timeout=3.0 # Strict 3-second timeout to allow DB operations under network latency
+                timeout=3.0
             )
             
-            # If the backend Guardian intercepts this and returns a 403 Forbidden, 
-            # we alert the wrapper to trigger the Kill-Switch.
+            # A 403 response indicates the budget limit has been reached.
             if res.status_code == 403:
                 try:
                     error_msg = res.json().get("detail", "Unknown 403 Forbidden")
-                    print(f"\n[ComputeCapX] Backend Rejected Request: {error_msg}")
+                    _logger.warning("[ComputeCapX] Budget limit reached: %s", error_msg)
                 except Exception:
                     pass
                 if not self._require_preflight:

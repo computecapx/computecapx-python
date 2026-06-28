@@ -1,4 +1,3 @@
-# sdk/computecapx/__init__.py
 # Public API surface for the ComputeCapX instrumentation SDK.
 #
 # Usage:

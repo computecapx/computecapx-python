@@ -10,14 +10,14 @@ The official Python SDK for [ComputeCapX](https://computecapx.com) — enterpris
 
 ## Features
 
-- **🔍 Universal AI Instrumentation** — Automatically intercepts OpenAI, Anthropic, Google Gemini, Groq, Mistral, Cohere, and any HTTP-based LLM API. No code changes required.
-- **💰 Real-time Budget Enforcement** — Blocks API calls the moment a project exceeds its budget limit. The block is synchronous and cannot be bypassed.
-- **🔄 Runaway Loop Circuit Breaker** — Detects and throttles AI agent feedback loops with three escalation tiers before they cause financial damage.
-- **☁️ Multi-Cloud Infrastructure Telemetry** — Auto-detects AWS, GCP, Azure, Oracle Cloud, DigitalOcean, Vercel, and Netlify via metadata APIs with no configuration.
-- **📊 Distributed Tracing** — Captures network calls (urllib3), database queries (SQLite, PostgreSQL), and AI call chains for full cost attribution per trace.
-- **💥 Crash Handler** — Hooks `sys.excepthook` to emit a final trace on fatal errors so every execution has a complete record.
-- **🚀 Zero-Code CLI Mode** — Use `computecapx-run` to instrument any existing script or server without touching its source.
-- **⚡ Non-Blocking** — All telemetry is batched and sent asynchronously. Zero impact on your application latency.
+- **Universal AI Instrumentation** — Automatically intercepts OpenAI, Anthropic, Google Gemini, Groq, Mistral, Cohere, and any HTTP-based LLM API. No code changes required.
+- **Real-time Budget Enforcement** — Blocks API calls the moment a project exceeds its budget limit. The block is synchronous and cannot be bypassed.
+- **Runaway Loop Circuit Breaker** — Detects and throttles AI agent feedback loops with three escalation tiers before they cause financial damage.
+- **Multi-Cloud Infrastructure Telemetry** — Auto-detects AWS, GCP, Azure, Oracle Cloud, DigitalOcean, Vercel, and Netlify via metadata APIs with no configuration.
+- **Distributed Tracing** — Captures network calls (urllib3), database queries (SQLite, PostgreSQL), and AI call chains for full cost attribution per trace.
+- **Crash Handler** — Hooks `sys.excepthook` to emit a final trace on fatal errors so every execution has a complete record.
+- **Zero-Code CLI Mode** — Use `computecapx-run` to instrument any existing script or server without touching its source.
+- **Non-Blocking** — All telemetry is batched and sent asynchronously. Zero impact on your application latency.
 
 ---
 
@@ -33,25 +33,40 @@ pip install computecapx
 
 ## Quick Start
 
-### Option 1: Environment Variables (Recommended)
+### Option 1: Zero-code CLI wrapper (Recommended)
 
-Set your credentials once — the SDK picks them up automatically.
+No code changes required. Save your credentials once and run any script with full telemetry.
 
-**.env file:**
-```env
-COMPUTECAPX_API_KEY=your_api_key_here
-COMPUTECAPX_PROJECT_ID=your_project_id_here
+```bash
+# 1. Install the SDK
+pip install computecapx
+
+# 2. Save credentials once
+computecapx login --key YOUR_API_KEY --project YOUR_PROJECT_ID
+
+# 3. Run any script or server with full monitoring
+computecapx-run python my_agent.py
+computecapx-run uvicorn app:main
+computecapx-run --no-cloud python my_local_script.py
 ```
 
-**your_script.py:**
-```python
-from dotenv import load_dotenv
-load_dotenv()
+That's it. No imports, no code changes, no `.env` files.
 
+---
+
+### Option 2: Environment Variables
+
+Set your credentials in your shell or deployment platform and the SDK picks them up automatically.
+
+```bash
+export COMPUTECAPX_API_KEY=your_api_key_here
+export COMPUTECAPX_PROJECT_ID=your_project_id_here
+```
+
+```python
 import computecapx
 computecapx.instrument()  # reads from env vars automatically
 
-# All AI calls below are now monitored — no other changes needed
 import openai
 client = openai.OpenAI(api_key="sk-...")
 response = client.chat.completions.create(
@@ -60,11 +75,13 @@ response = client.chat.completions.create(
 )
 ```
 
-> `python-dotenv` is optional. If you export the variables in your shell or deployment platform, `load_dotenv()` is not needed.
-
 ---
 
-### Option 2: Pass credentials directly
+### Option 3: Pass credentials directly (Testing only)
+
+You can pass credentials directly in code. This is useful for quick testing, or if you are dynamically loading keys from a secret manager (like AWS Secrets Manager).
+
+> **Warning:** Do not hardcode credentials in production or commit them to version control.
 
 ```python
 import computecapx
@@ -73,22 +90,6 @@ computecapx.instrument(
     api_key="YOUR_API_KEY",
     project_id="YOUR_PROJECT_ID",
 )
-```
-
----
-
-### Option 3: Zero-code CLI wrapper
-
-Instrument any existing script without touching its source:
-
-```bash
-# Save credentials once
-computecapx login --key YOUR_API_KEY --project YOUR_PROJECT_ID
-
-# Run any script with full telemetry
-computecapx-run python my_agent.py
-computecapx-run uvicorn app:main   # Works with servers too
-computecapx-run --no-cloud python my_local_script.py
 ```
 
 ---

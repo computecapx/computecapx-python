@@ -52,9 +52,9 @@ dev = [
 [project.urls]
 Homepage = "https://computecapx.com"
 Documentation = "https://computecapx.com/docs"
-Repository = "https://github.com/computecap/computecapx-python"
-"Bug Tracker" = "https://github.com/computecap/computecapx-python/issues"
-Changelog = "https://github.com/computecap/computecapx-python/blob/main/CHANGELOG.md"
+Repository = "https://github.com/computecapx/computecapx-python"
+"Bug Tracker" = "https://github.com/computecapx/computecapx-python/issues"
+Changelog = "https://github.com/computecapx/computecapx-python/blob/main/CHANGELOG.md"
 
 [project.scripts]
 computecapx = "computecapx.cli:main"
