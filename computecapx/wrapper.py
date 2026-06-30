@@ -40,6 +40,7 @@ class TelemetryStreamWrapper:
                 elif isinstance(chunk, bytes):
                     parts.append(chunk)
             self._callback(b"".join(parts))
+            self._accumulated.clear()
 
     def __iter__(self):
         try:
@@ -92,6 +93,7 @@ class AsyncTelemetryStreamWrapper:
                 elif isinstance(chunk, bytes):
                     parts.append(chunk)
             self._callback(b"".join(parts))
+            self._accumulated.clear()
 
     async def __aiter__(self):
         try:
@@ -863,8 +865,8 @@ class ComputeCapTelemetry:
                     try:
                         url_str = str(request.url).lower()
                         parsed_url = urllib.parse.urlparse(url_str)
-                        request_host = parsed_url.hostname or ""
-                        backend_host = urllib.parse.urlparse(self.client.backend_url).hostname
+                        request_host = (parsed_url.hostname or "").lower()
+                        backend_host = (urllib.parse.urlparse(self.client.backend_url).hostname or "").lower()
                         
                         if request_host != backend_host:
                             cl = request.headers.get("content-length")
@@ -926,8 +928,8 @@ class ComputeCapTelemetry:
                     try:
                         url_str = str(request.url).lower()
                         parsed_url = urllib.parse.urlparse(url_str)
-                        request_host = parsed_url.hostname or ""
-                        backend_host = urllib.parse.urlparse(self.client.backend_url).hostname
+                        request_host = (parsed_url.hostname or "").lower()
+                        backend_host = (urllib.parse.urlparse(self.client.backend_url).hostname or "").lower()
                         
                         if request_host != backend_host:
                             cl = request.headers.get("content-length")
@@ -996,8 +998,8 @@ class ComputeCapTelemetry:
                         if wrapper:
                             url_str = str(request.url).lower()
                             parsed_url = urllib.parse.urlparse(url_str)
-                            request_host = parsed_url.hostname or ""
-                            backend_host = urllib.parse.urlparse(wrapper.client.backend_url).hostname
+                            request_host = (parsed_url.hostname or "").lower()
+                            backend_host = (urllib.parse.urlparse(wrapper.client.backend_url).hostname or "").lower()
                             
                             if request_host != backend_host:
                                 cl = request.headers.get("content-length")
@@ -1091,8 +1093,9 @@ class ComputeCapTelemetry:
                 wrapper = _global_telemetry_engine
                 if wrapper and wrapper.client:
                     import urllib.parse
-                    parsed = urllib.parse.urlparse(wrapper.client.backend_url)
-                    if self_pool.host == parsed.hostname:
+                    pool_host = (self_pool.host or "").lower()
+                    parsed_host = (parsed.hostname or "").lower()
+                    if pool_host == parsed_host:
                         return original_urlopen(self_pool, method, url, body=body, headers=headers, *args, **kwargs)
 
                 start_time = time.time()
@@ -1385,6 +1388,12 @@ def instrument(
     )
 
     global _global_telemetry_engine
+    if _global_telemetry_engine is not None:
+        if resolved_api_key:
+            _global_telemetry_engine.client.api_key = resolved_api_key
+        _global_telemetry_engine.project_id = resolved_project_id
+        return _global_telemetry_engine.client
+
     client = ComputeCapClient(api_key=resolved_api_key, backend_url=backend_url)
     telemetry_engine = ComputeCapTelemetry(client, resolved_project_id)
     _global_telemetry_engine = telemetry_engine

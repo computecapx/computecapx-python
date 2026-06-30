@@ -9,15 +9,11 @@ import requests
 from .client import ComputeCapClient
 from .detector import EnvironmentDetector
 
-# Configuration storage path (standard Unix-style hidden directory)
-CONFIG_DIR = Path.home() / ".computecapx"
-CONFIG_FILE = CONFIG_DIR / "config.json"
+from .client import _load_persisted_config, _save_persisted_config
 
 def save_config(api_key: str = None, backend_url: str = None, project_id: str = None):
     """Securely persists configuration to the user's home directory."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    config = load_config()
-    
+    config = {}
     if api_key is not None:
         config["api_key"] = api_key
     if backend_url is not None:
@@ -25,19 +21,12 @@ def save_config(api_key: str = None, backend_url: str = None, project_id: str = 
     if project_id is not None:
         config["project_id"] = project_id
         
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=4)
-    print(f"Configuration successfully persisted to {CONFIG_FILE}")
+    _save_persisted_config(config)
+    print(f"Configuration successfully persisted to {Path.home() / '.computecapx' / 'config.json'}")
 
 def load_config():
     """Retrieves persisted configuration."""
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
+    return _load_persisted_config()
 
 def cmd_login(args):
     """Handles the authentication and configuration setup."""

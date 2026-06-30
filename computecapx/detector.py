@@ -14,6 +14,7 @@ class EnvironmentDetector:
     
     # Short timeout prevents latency in non-cloud or unsupported environments.
     METADATA_TIMEOUT = 1.0  
+    _cached_env = None
 
     @staticmethod
     def _ping_aws() -> Optional[Dict[str, str]]:
@@ -158,12 +159,19 @@ class EnvironmentDetector:
         Executes a rapid cascade of metadata checks.
         Returns a dictionary containing the provider, unique resource identifier, region, and instance type.
         """
+        if cls._cached_env is not None:
+            return cls._cached_env
+
+        def _cache_and_return(res):
+            cls._cached_env = res
+            return res
+
         # 1. Check Edge/Serverless first (Environment variables are instant)
         edge = cls._check_edge()
         if edge:
             edge["region"] = "global"
             edge["instance_type"] = "serverless"
-            return edge
+            return _cache_and_return(edge)
 
         # 2. Check environment override to bypass network checks entirely
         env_override = os.getenv("COMPUTECAPX_ENV")
@@ -171,10 +179,10 @@ class EnvironmentDetector:
             env_override = env_override.lower()
             if env_override in ("local", "dev", "development"):
                 node_name = platform.node() or "unknown-host"
-                return {"provider": "local", "resource_id": node_name, "region": "local", "instance_type": "local-machine"}
+                return _cache_and_return({"provider": "local", "resource_id": node_name, "region": "local", "instance_type": "local-machine"})
             elif env_override in ("aws", "gcp", "azure", "oci", "digitalocean"):
                 node_name = platform.node() or "unknown-host"
-                return {"provider": env_override, "resource_id": node_name, "region": "override", "instance_type": "override"}
+                return _cache_and_return({"provider": env_override, "resource_id": node_name, "region": "override", "instance_type": "override"})
 
         # 3. Check standard Cloud Metadata IPs concurrently using daemon threads to prevent interpreter exit hangs
         import threading
@@ -205,15 +213,15 @@ class EnvironmentDetector:
         try:
             # Block at most METADATA_TIMEOUT for the first successful cloud metadata ping
             provider, res = results.get(timeout=cls.METADATA_TIMEOUT)
-            return {
+            return _cache_and_return({
                 "provider": provider,
                 "resource_id": res["resource_id"],
                 "region": res["region"],
                 "instance_type": res["instance_type"]
-            }
+            })
         except queue.Empty:
             pass
 
         # 4. Fallback to Local/Container
         node_name = platform.node() or "unknown-host"
-        return {"provider": "local", "resource_id": node_name, "region": "local", "instance_type": "local-machine"}
+        return _cache_and_return({"provider": "local", "resource_id": node_name, "region": "local", "instance_type": "local-machine"})

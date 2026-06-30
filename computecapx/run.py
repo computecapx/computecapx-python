@@ -81,10 +81,18 @@ def main():
 def _execute_script(target: str, is_file: bool, target_args: List[str]):
     """Helper to execute the target Python script or module inside the current thread space."""
     sys.argv = target_args
+    original_path = list(sys.path)
     if is_file:
-        runpy.run_path(target, run_name="__main__")
-    else:
-        runpy.run_module(target, run_name="__main__", alter_sys=True)
+        target_dir = os.path.dirname(os.path.abspath(target))
+        if target_dir not in sys.path:
+            sys.path.insert(0, target_dir)
+    try:
+        if is_file:
+            runpy.run_path(target, run_name="__main__")
+        else:
+            runpy.run_module(target, run_name="__main__", alter_sys=True)
+    finally:
+        sys.path = original_path
 
 if __name__ == "__main__":
     main()

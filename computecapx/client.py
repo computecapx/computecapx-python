@@ -140,6 +140,7 @@ class ComputeCapClient:
             
         self._active_threads = []
         self._thread_lock = threading.Lock()
+        self._preflight_lock = threading.Lock()
         self._trace_queue = queue.Queue()
         self._shutdown_event = threading.Event()
         
@@ -167,6 +168,9 @@ class ComputeCapClient:
     def flush(self) -> None:
         """Blocks until all active telemetry requests are completed."""
         self._shutdown_event.set()
+        
+        # Sentinel to unblock get() instantly in batch worker
+        self._trace_queue.put(None)
         
         # Gracefully join the daemon batch thread to prevent telemetry data loss on exit
         if hasattr(self, "_batch_thread") and self._batch_thread.is_alive():
@@ -216,12 +220,17 @@ class ComputeCapClient:
             try:
                 # Wait up to 1 second for the first event
                 first_event = self._trace_queue.get(timeout=1.0)
+                if first_event is None:
+                    break
                 batch.append(first_event)
                 
                 # Drain up to 99 more immediately
                 while len(batch) < 100:
                     try:
-                        batch.append(self._trace_queue.get_nowait())
+                        item = self._trace_queue.get_nowait()
+                        if item is None:
+                            break
+                        batch.append(item)
                     except queue.Empty:
                         break
             except queue.Empty:
@@ -241,7 +250,10 @@ class ComputeCapClient:
                     except Exception:
                         pass
                     if attempt < 2:
-                        time.sleep(5.0)
+                        for _ in range(50):
+                            if self._shutdown_event.is_set():
+                                break
+                            time.sleep(0.1)
 
     def _send_async(self, endpoint: str, payload: Dict[str, Any], max_retries: int = 1) -> None:
         """Internal method to execute HTTP POST requests in a detached thread with retry support."""
@@ -282,7 +294,11 @@ class ComputeCapClient:
                 
                 # Wait before next retry attempt
                 if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
+                    sleep_slices = int(retry_delay / 0.1)
+                    for _ in range(sleep_slices):
+                        if self._shutdown_event.is_set():
+                            break
+                        time.sleep(0.1)
 
         with self._thread_lock:
             self._active_threads = [t for t in self._active_threads if t.is_alive()]
@@ -319,10 +335,14 @@ class ComputeCapClient:
             # Fast path: budget check is not required, skip the network round-trip.
             return True
             
-        self._has_done_initial_check = True
+        with self._preflight_lock:
+            # Recheck under lock to avoid duplicate parallel requests on startup
+            if not self._require_preflight and self._has_done_initial_check:
+                return True
+            self._has_done_initial_check = True
 
-        if not self.api_key:
-            return True # Fail open if no API key is provided
+            if not self.api_key:
+                return True # Fail open if no API key is provided
             
         try:
             payload = {
