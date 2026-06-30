@@ -99,7 +99,7 @@ class ComputeCapClient:
             threads_to_join = list(self._active_threads)
         for t in threads_to_join:
             if t.is_alive():
-                t.join(timeout=2.0)
+                t.join(timeout=8.0)
                 
         # Drain remaining events in the batch queue
         batch = []
