@@ -158,7 +158,7 @@ The circuit breaker automatically detects repetitive AI agent patterns:
 |---|---|---|
 | Warning | 5 similar requests in 10 seconds | 2-second throttle applied |
 | Throttle | 10 similar requests in 20 seconds | 5-second throttle applied |
-| Block | 20 requests in 60 seconds | `ComputeCapRunawayLoopError` raised, task permanently blocked |
+| Block | 20 requests in 60 seconds | `ComputeCapAILoopBlocker` raised, task permanently blocked |
 
 ---
 
@@ -196,13 +196,13 @@ The circuit breaker automatically detects repetitive AI agent patterns:
 Both errors inherit from `BaseException` so they cannot be accidentally swallowed by a bare `except Exception` in user code.
 
 ```python
-from computecapx import ComputeCapBudgetExceededError, ComputeCapRunawayLoopError
+from computecapx import ComputeCapBudgetExceededError, ComputeCapAILoopBlocker
 
 try:
     response = openai_client.chat.completions.create(...)
 except ComputeCapBudgetExceededError:
     print("Monthly budget limit reached — request blocked by ComputeCapX.")
-except ComputeCapRunawayLoopError:
+except ComputeCapAILoopBlocker:
     print("Runaway agent loop detected — task permanently halted.")
 ```
 
