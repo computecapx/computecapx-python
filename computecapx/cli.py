@@ -31,8 +31,11 @@ def save_config(api_key: str = None, backend_url: str = None, project_id: str = 
 def load_config():
     """Retrieves persisted configuration."""
     if CONFIG_FILE.exists():
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
     return {}
 
 def cmd_login(args):
@@ -69,8 +72,8 @@ def cmd_status(args):
     
     # Simple health check ping via the client
     try:
-        import requests
-        res = requests.get(f"{backend_url.replace('/api/v1', '')}/", timeout=2.0)
+        url_to_test = backend_url or "https://api.computecapx.com/api/v1"
+        res = requests.get(f"{url_to_test.replace('/api/v1', '')}/", timeout=2.0)
         if res.status_code == 200:
             print("Connectivity: OPERATIONAL")
         else:

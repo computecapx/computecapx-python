@@ -81,6 +81,7 @@ class ComputeCapClient:
             warnings.warn("ComputeCapX API Key is missing. Telemetry will not be recorded.")
             
         self._active_threads = []
+        self._thread_lock = threading.Lock()
         self._trace_queue = queue.Queue()
         self._shutdown_event = threading.Event()
         
@@ -94,7 +95,9 @@ class ComputeCapClient:
     def flush(self) -> None:
         """Blocks until all active telemetry requests are completed."""
         self._shutdown_event.set()
-        for t in list(self._active_threads):
+        with self._thread_lock:
+            threads_to_join = list(self._active_threads)
+        for t in threads_to_join:
             if t.is_alive():
                 t.join(timeout=2.0)
                 
@@ -119,10 +122,12 @@ class ComputeCapClient:
                 pass
 
     def _get_headers(self) -> Dict[str, str]:
-        return {
-            "X-API-Key": self.api_key,
+        headers = {
             "Content-Type": "application/json"
         }
+        if self.api_key is not None:
+            headers["X-API-Key"] = str(self.api_key)
+        return headers
 
     def _batch_worker(self) -> None:
         """Daemon thread that reuses a single connection to batch telemetry events."""
@@ -146,15 +151,20 @@ class ComputeCapClient:
                 continue
                 
             if batch:
-                try:
-                    base = self.backend_url.replace("/api/v1", "").rstrip("/")
-                    session.post(
-                        f"{base}/api/v1/telemetry/traces",
-                        json=batch,
-                        timeout=5.0
-                    )
-                except Exception:
-                    pass
+                for attempt in range(3):
+                    try:
+                        base = self.backend_url.replace("/api/v1", "").rstrip("/")
+                        res = session.post(
+                            f"{base}/api/v1/telemetry/traces",
+                            json=batch,
+                            timeout=5.0
+                        )
+                        if res.status_code == 200:
+                            break
+                    except Exception:
+                        pass
+                    if attempt < 2:
+                        time.sleep(5.0)
 
     def _send_async(self, endpoint: str, payload: Dict[str, Any], max_retries: int = 1) -> None:
         """Internal method to execute HTTP POST requests in a detached thread with retry support."""
@@ -198,11 +208,11 @@ class ComputeCapClient:
                     time.sleep(retry_delay)
 
         thread = threading.Thread(target=_post, daemon=True)
-        self._active_threads.append(thread)
-        thread.start()
-        
-        # Cleanup dead threads to prevent memory leak on long-running processes
-        self._active_threads = [t for t in self._active_threads if t.is_alive()]
+        with self._thread_lock:
+            self._active_threads.append(thread)
+            thread.start()
+            # Cleanup dead threads to prevent memory leak on long-running processes
+            self._active_threads = [t for t in self._active_threads if t.is_alive()]
 
     def record_ai_telemetry(self, payload: Dict[str, Any]) -> None:
         """Transmits AI token usage and cost metrics asynchronously with up to 3 retries."""

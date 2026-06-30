@@ -276,7 +276,8 @@ class ComputeCapTelemetry:
         history = _request_history.get()
         if history is None:
             history = collections.deque(maxlen=20)
-            _request_history.set(history)
+        else:
+            history = collections.deque(history, maxlen=20)
 
         current_time = time.time()
         
@@ -292,6 +293,7 @@ class ComputeCapTelemetry:
             "response": "",
             "sleep_duration": 0.0
         })
+        _request_history.set(history)
 
         # Heuristic checks: is a loop actually active?
         is_loop = _has_internal_message_repetition(messages_list) or _detect_loop_in_history(list(history))
@@ -327,9 +329,8 @@ class ComputeCapTelemetry:
                 )
                 history.clear()
                 raise ComputeCapRunawayLoopError(
-                    f"CRITICAL: Runaway AI Loop detected in isolated context. "
-                    f"20 requests to {provider.upper()} ({model}) attempted in {net_window:.2f}s. "
-                    f"Task permanently blocked."
+                    "ComputeCapX : Rapid repetitive requests detected (potential infinite loop). "
+                    "Terminated to prevent resource exhaustion."
                 )
                 
         elif count >= 10:
@@ -382,7 +383,7 @@ class ComputeCapTelemetry:
                 "Request blocked to prevent cost overruns. "
                 "Update your budget limit in the dashboard to continue."
             )
-            raise ComputeCapBudgetExceededError("ComputeCap Active Block: Project budget limit exceeded.")
+            raise ComputeCapBudgetExceededError("ComputeCapX : Monthly AI budget threshold exceeded. Request blocked to prevent cost overruns.")
 
     def _transmit(self, provider: str, model: str, t_in: int, t_out: int):
         try:
@@ -602,7 +603,10 @@ class ComputeCapTelemetry:
             class GeminiPostImportFinder(importlib.abc.MetaPathFinder):
                 def find_spec(self_, fullname, path, target=None):
                     if fullname == "google.generativeai":
-                        sys.meta_path.remove(self_)
+                        try:
+                            sys.meta_path.remove(self_)
+                        except ValueError:
+                            pass
                         try:
                             spec = importlib.util.find_spec(fullname)
                             if spec and spec.loader:
@@ -958,13 +962,10 @@ class ComputeCapTelemetry:
                 status = "success"
                 try:
                     response = original_urlopen(self_pool, method, url, body=body, headers=headers, *args, **kwargs)
-                    # Capture exact egress/ingress for Micro-Attribution
-                    if hasattr(response, 'data') and response.data:
-                        bytes_in = len(response.data)
-                    else:
-                        cl = response.headers.get("content-length")
-                        if cl and cl.isdigit():
-                            bytes_in = int(cl)
+                    # Safe ingress calculation without consuming the socket stream
+                    cl = response.headers.get("content-length") if hasattr(response, "headers") else None
+                    if cl and cl.isdigit():
+                        bytes_in = int(cl)
                 except Exception as e:
                     status = f"error: {str(e)}"
                     raise
@@ -1159,7 +1160,7 @@ class ComputeCapTelemetry:
                         "event_type": "internal_error",
                         "service": "python_runtime",
                         "method": "excepthook",
-                        "status": f"FATAL CRASH: {exc_type.__name__}: {str(exc_value)}",
+                        "status": f"FATAL CRASH: {exc_type.__name__ if exc_type else 'UnknownException'}: {str(exc_value)}",
                         "latency_ms": 0,
                     }
                     wrapper.client.record_trace_event(err_payload)

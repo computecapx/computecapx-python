@@ -117,7 +117,7 @@ class EnvironmentDetector:
                 instance_type = data.get('vmSize', 'unknown')
                 
                 return {"resource_id": r_id, "region": r_group, "instance_type": instance_type}
-        except requests.exceptions.RequestException:
+        except Exception:
             pass
         return None
 
@@ -139,7 +139,7 @@ class EnvironmentDetector:
                 instance_type = data.get("shape", "unknown")
                 
                 return {"resource_id": r_id, "region": region, "instance_type": instance_type}
-        except requests.exceptions.RequestException:
+        except Exception:
             pass
         return None
 
