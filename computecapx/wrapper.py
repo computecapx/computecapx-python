@@ -28,29 +28,44 @@ class TelemetryStreamWrapper:
         self._stream = original_stream
         self._callback = callback
         self._accumulated = []
+        self._callback_called = False
+
+    def _trigger_callback(self):
+        if not self._callback_called:
+            self._callback_called = True
+            parts = []
+            for chunk in self._accumulated:
+                if isinstance(chunk, str):
+                    parts.append(chunk.encode("utf-8"))
+                elif isinstance(chunk, bytes):
+                    parts.append(chunk)
+            self._callback(b"".join(parts))
 
     def __iter__(self):
         for chunk in self._stream:
             self._accumulated.append(chunk)
             yield chunk
-        self._callback(b"".join(self._accumulated))
+        self._trigger_callback()
 
     def iter_bytes(self, *args, **kwargs):
         for chunk in self._stream.iter_bytes(*args, **kwargs):
             self._accumulated.append(chunk)
             yield chunk
-        self._callback(b"".join(self._accumulated))
+        self._trigger_callback()
 
     def read(self, *args, **kwargs):
         chunk = self._stream.read(*args, **kwargs)
         if chunk:
             self._accumulated.append(chunk)
         if not chunk:
-            self._callback(b"".join(self._accumulated))
+            self._trigger_callback()
         return chunk
 
     def close(self):
-        self._stream.close()
+        try:
+            self._stream.close()
+        finally:
+            self._trigger_callback()
 
     def __getattr__(self, name):
         return getattr(self._stream, name)
@@ -61,29 +76,44 @@ class AsyncTelemetryStreamWrapper:
         self._stream = original_stream
         self._callback = callback
         self._accumulated = []
+        self._callback_called = False
+
+    def _trigger_callback(self):
+        if not self._callback_called:
+            self._callback_called = True
+            parts = []
+            for chunk in self._accumulated:
+                if isinstance(chunk, str):
+                    parts.append(chunk.encode("utf-8"))
+                elif isinstance(chunk, bytes):
+                    parts.append(chunk)
+            self._callback(b"".join(parts))
 
     async def __aiter__(self):
         async for chunk in self._stream:
             self._accumulated.append(chunk)
             yield chunk
-        self._callback(b"".join(self._accumulated))
+        self._trigger_callback()
 
     async def aiter_bytes(self, *args, **kwargs):
         async for chunk in self._stream.aiter_bytes(*args, **kwargs):
             self._accumulated.append(chunk)
             yield chunk
-        self._callback(b"".join(self._accumulated))
+        self._trigger_callback()
 
     async def read(self, *args, **kwargs):
         chunk = await self._stream.read(*args, **kwargs)
         if chunk:
             self._accumulated.append(chunk)
         if not chunk:
-            self._callback(b"".join(self._accumulated))
+            self._trigger_callback()
         return chunk
 
     async def aclose(self):
-        await self._stream.aclose()
+        try:
+            await self._stream.aclose()
+        finally:
+            self._trigger_callback()
 
     def __getattr__(self, name):
         return getattr(self._stream, name)

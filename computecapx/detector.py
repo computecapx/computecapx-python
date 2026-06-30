@@ -187,7 +187,8 @@ class EnvironmentDetector:
             ("digitalocean", cls._ping_digitalocean),
         ]
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+        try:
             futures = {executor.submit(fn): provider for provider, fn in check_fns}
             # We want to return as soon as the first successful cloud ping finishes
             # to avoid blocking on remaining timeouts.
@@ -196,6 +197,7 @@ class EnvironmentDetector:
                 try:
                     res = future.result()
                     if res:
+                        executor.shutdown(wait=False)
                         return {
                             "provider": provider,
                             "resource_id": res["resource_id"],
@@ -204,6 +206,8 @@ class EnvironmentDetector:
                         }
                 except Exception:
                     pass
+        finally:
+            executor.shutdown(wait=False)
 
         # 4. Fallback to Local/Container
         node_name = platform.node() or "unknown-host"

@@ -54,3 +54,43 @@ def test_telemetry_stream_wrapper_async():
         
     assert collected == chunks
     assert called == [b"async hello world"]
+
+def test_telemetry_stream_wrapper_early_close():
+    chunks = [b"chunk1", b"chunk2"]
+    called = []
+    
+    def callback(data):
+        called.append(data)
+        
+    class DummyStreamWithClose:
+        def __init__(self, data):
+            self.data = data
+            
+        def __iter__(self):
+            return iter(self.data)
+            
+        def close(self):
+            pass
+            
+    dummy = DummyStreamWithClose(chunks)
+    wrapper = TelemetryStreamWrapper(dummy, callback)
+    
+    # Simulate partial read and close
+    it = iter(wrapper)
+    assert next(it) == b"chunk1"
+    wrapper.close()
+    
+    assert called == [b"chunk1"]
+
+def test_telemetry_stream_wrapper_string_chunks():
+    chunks = ["hello ", b"world"]
+    called = []
+    
+    def callback(data):
+        called.append(data)
+        
+    wrapper = TelemetryStreamWrapper(chunks, callback)
+    collected = list(wrapper)
+    
+    assert collected == chunks
+    assert called == [b"hello world"]

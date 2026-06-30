@@ -84,12 +84,21 @@ def _save_persisted_config(config: Dict[str, Any]) -> None:
                     
             existing.update(config)
             
-            # Atomic write pattern to prevent file corruption
+            # Atomic write pattern to prevent file corruption (with retry loop for Windows sharing violations)
             tmp_file = config_file.with_suffix(".tmp")
             try:
                 with open(tmp_file, "w") as f:
                     json.dump(existing, f)
-                tmp_file.replace(config_file)
+                
+                # Retry replace to avoid Windows PermissionError under heavy parallel process loads
+                for attempt in range(5):
+                    try:
+                        tmp_file.replace(config_file)
+                        break
+                    except PermissionError:
+                        if attempt == 4:
+                            raise
+                        time.sleep(0.05)
             except Exception:
                 if tmp_file.exists():
                     tmp_file.unlink()
