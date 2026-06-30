@@ -5,6 +5,7 @@ import os
 import sys
 import json
 from pathlib import Path
+import requests
 from .client import ComputeCapClient
 from .detector import EnvironmentDetector
 

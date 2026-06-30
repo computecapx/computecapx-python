@@ -327,7 +327,6 @@ class ComputeCapTelemetry:
                     "20 requests to %s (%s) attempted in %.2fs. Task permanently blocked.",
                     provider.upper(), model, net_window
                 )
-                history.clear()
                 raise ComputeCapRunawayLoopError(
                     "ComputeCapX : Rapid repetitive requests detected (potential infinite loop). "
                     "Terminated to prevent resource exhaustion."
@@ -1213,7 +1212,8 @@ def instrument(
     Returns:
         A configured :class:`ComputeCapClient` instance.
     """
-    from .client import _load_persisted_config
+    from .client import _load_dotenv_file, _load_persisted_config
+    _load_dotenv_file()
     stored_config = _load_persisted_config()
 
     # Credential resolution: direct arg -> env var -> CLI config file

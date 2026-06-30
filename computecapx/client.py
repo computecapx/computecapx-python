@@ -15,6 +15,41 @@ from typing import Dict, Any, Optional, List
 _logger = logging.getLogger(__name__)
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
+
+def _load_dotenv_file() -> Dict[str, str]:
+    """Load local .env values into os.environ without overriding explicit shell values."""
+    loaded: Dict[str, str] = {}
+    current_dir = Path.cwd()
+
+    for _ in range(10):
+        dotenv_path = current_dir / ".env"
+        if dotenv_path.exists() and dotenv_path.is_file():
+            try:
+                with open(dotenv_path, "r", encoding="utf-8") as handle:
+                    for raw_line in handle:
+                        line = raw_line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if line.startswith("export "):
+                            line = line[len("export "):].strip()
+                        if "=" not in line:
+                            continue
+                        key, value = line.split("=", 1)
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        if key and key not in os.environ and key not in loaded:
+                            os.environ[key] = value
+                            loaded[key] = value
+            except Exception:
+                pass
+
+        if current_dir.parent == current_dir:
+            break
+        current_dir = current_dir.parent
+
+    return loaded
+
+
 def _load_persisted_config() -> Dict[str, str]:
     """Helper to safely retrieve CLI-persisted configuration from the user's home directory."""
     config_file = Path.home() / ".computecapx" / "config.json"
@@ -58,6 +93,8 @@ class ComputeCapClient:
     DEFAULT_API_URL = "https://api.computecapx.com/api/v1"
     
     def __init__(self, api_key: Optional[str] = None, backend_url: Optional[str] = None):
+        _load_dotenv_file()
+
         # Read the CLI configuration file fallbacks
         stored_config = _load_persisted_config()
         
