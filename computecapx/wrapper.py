@@ -42,16 +42,20 @@ class TelemetryStreamWrapper:
             self._callback(b"".join(parts))
 
     def __iter__(self):
-        for chunk in self._stream:
-            self._accumulated.append(chunk)
-            yield chunk
-        self._trigger_callback()
+        try:
+            for chunk in self._stream:
+                self._accumulated.append(chunk)
+                yield chunk
+        finally:
+            self._trigger_callback()
 
     def iter_bytes(self, *args, **kwargs):
-        for chunk in self._stream.iter_bytes(*args, **kwargs):
-            self._accumulated.append(chunk)
-            yield chunk
-        self._trigger_callback()
+        try:
+            for chunk in self._stream.iter_bytes(*args, **kwargs):
+                self._accumulated.append(chunk)
+                yield chunk
+        finally:
+            self._trigger_callback()
 
     def read(self, *args, **kwargs):
         chunk = self._stream.read(*args, **kwargs)
@@ -90,16 +94,20 @@ class AsyncTelemetryStreamWrapper:
             self._callback(b"".join(parts))
 
     async def __aiter__(self):
-        async for chunk in self._stream:
-            self._accumulated.append(chunk)
-            yield chunk
-        self._trigger_callback()
+        try:
+            async for chunk in self._stream:
+                self._accumulated.append(chunk)
+                yield chunk
+        finally:
+            self._trigger_callback()
 
     async def aiter_bytes(self, *args, **kwargs):
-        async for chunk in self._stream.aiter_bytes(*args, **kwargs):
-            self._accumulated.append(chunk)
-            yield chunk
-        self._trigger_callback()
+        try:
+            async for chunk in self._stream.aiter_bytes(*args, **kwargs):
+                self._accumulated.append(chunk)
+                yield chunk
+        finally:
+            self._trigger_callback()
 
     async def read(self, *args, **kwargs):
         chunk = await self._stream.read(*args, **kwargs)
@@ -1033,19 +1041,39 @@ class ComputeCapTelemetry:
                             original_iter_content = response.iter_content
                             accumulated_chunks = []
                             
+                            def _trigger_requests_callback():
+                                if not hasattr(response, "_telemetry_transmitted"):
+                                    response._telemetry_transmitted = True
+                                    parts = []
+                                    for chunk in accumulated_chunks:
+                                        if isinstance(chunk, str):
+                                            parts.append(chunk.encode("utf-8"))
+                                        elif isinstance(chunk, bytes):
+                                            parts.append(chunk)
+                                    full_content = b"".join(parts)
+                                    t_in, t_out = _parse_sse_usage(full_content)
+                                    if t_in == 0:
+                                        t_in = _estimate_input_tokens(body_bytes)
+                                    if (t_in > 0 or t_out > 0) and _global_telemetry_engine:
+                                        _global_telemetry_engine._transmit(provider, model, t_in, t_out)
+
                             def wrapped_iter_content(*i_args, **i_kwargs):
-                                for chunk in original_iter_content(*i_args, **i_kwargs):
-                                    accumulated_chunks.append(chunk)
-                                    yield chunk
-                                # Stream fully consumed
-                                full_content = b"".join(accumulated_chunks)
-                                t_in, t_out = _parse_sse_usage(full_content)
-                                if t_in == 0:
-                                    t_in = _estimate_input_tokens(body_bytes)
-                                if (t_in > 0 or t_out > 0) and _global_telemetry_engine:
-                                    _global_telemetry_engine._transmit(provider, model, t_in, t_out)
+                                try:
+                                    for chunk in original_iter_content(*i_args, **i_kwargs):
+                                        accumulated_chunks.append(chunk)
+                                        yield chunk
+                                finally:
+                                    _trigger_requests_callback()
                                     
+                            original_close = response.close
+                            def wrapped_close():
+                                try:
+                                    original_close()
+                                finally:
+                                    _trigger_requests_callback()
+
                             response.iter_content = wrapped_iter_content
+                            response.close = wrapped_close
                     except Exception:
                         pass
                 return response

@@ -150,6 +150,20 @@ class ComputeCapClient:
         self._require_preflight = bool(stored_config.get("require_preflight", False))
         self._has_done_initial_check = False
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def close(self) -> None:
+        """Closes the client, triggers flush, and unregisters exit hooks to release resources."""
+        try:
+            atexit.unregister(self.flush)
+        except Exception:
+            pass
+        self.flush()
+
     def flush(self) -> None:
         """Blocks until all active telemetry requests are completed."""
         self._shutdown_event.set()
@@ -336,7 +350,11 @@ class ComputeCapClient:
                     pass
                 if not self._require_preflight:
                     self._require_preflight = True
-                    _save_persisted_config({"require_preflight": True})
+                    threading.Thread(
+                        target=_save_persisted_config,
+                        args=({"require_preflight": True},),
+                        daemon=True
+                    ).start()
                 return False
             elif res.status_code == 200:
                 try:
@@ -345,7 +363,11 @@ class ComputeCapClient:
                         near_limit = data.get("near_limit", False)
                         if self._require_preflight != near_limit:
                             self._require_preflight = near_limit
-                            _save_persisted_config({"require_preflight": near_limit})
+                            threading.Thread(
+                                target=_save_persisted_config,
+                                args=({"require_preflight": near_limit},),
+                                daemon=True
+                            ).start()
                 except Exception:
                     pass
                 

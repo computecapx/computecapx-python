@@ -176,8 +176,9 @@ class EnvironmentDetector:
                 node_name = platform.node() or "unknown-host"
                 return {"provider": env_override, "resource_id": node_name, "region": "override", "instance_type": "override"}
 
-        # 3. Check standard Cloud Metadata IPs concurrently to prevent sequential timeout delays
-        import concurrent.futures
+        # 3. Check standard Cloud Metadata IPs concurrently using daemon threads to prevent interpreter exit hangs
+        import threading
+        import queue
 
         check_fns = [
             ("aws", cls._ping_aws),
@@ -187,27 +188,31 @@ class EnvironmentDetector:
             ("digitalocean", cls._ping_digitalocean),
         ]
 
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+        results = queue.Queue()
+
+        def worker(provider, fn):
+            try:
+                res = fn()
+                if res:
+                    results.put((provider, res))
+            except Exception:
+                pass
+
+        for provider, fn in check_fns:
+            t = threading.Thread(target=worker, args=(provider, fn), daemon=True)
+            t.start()
+
         try:
-            futures = {executor.submit(fn): provider for provider, fn in check_fns}
-            # We want to return as soon as the first successful cloud ping finishes
-            # to avoid blocking on remaining timeouts.
-            for future in concurrent.futures.as_completed(futures):
-                provider = futures[future]
-                try:
-                    res = future.result()
-                    if res:
-                        executor.shutdown(wait=False)
-                        return {
-                            "provider": provider,
-                            "resource_id": res["resource_id"],
-                            "region": res["region"],
-                            "instance_type": res["instance_type"]
-                        }
-                except Exception:
-                    pass
-        finally:
-            executor.shutdown(wait=False)
+            # Block at most METADATA_TIMEOUT for the first successful cloud metadata ping
+            provider, res = results.get(timeout=cls.METADATA_TIMEOUT)
+            return {
+                "provider": provider,
+                "resource_id": res["resource_id"],
+                "region": res["region"],
+                "instance_type": res["instance_type"]
+            }
+        except queue.Empty:
+            pass
 
         # 4. Fallback to Local/Container
         node_name = platform.node() or "unknown-host"

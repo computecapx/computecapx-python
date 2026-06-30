@@ -94,3 +94,36 @@ def test_telemetry_stream_wrapper_string_chunks():
     
     assert collected == chunks
     assert called == [b"hello world"]
+
+def test_telemetry_stream_wrapper_exception_abort():
+    chunks = [b"chunk1", b"chunk2"]
+    called = []
+    
+    def callback(data):
+        called.append(data)
+        
+    wrapper = TelemetryStreamWrapper(chunks, callback)
+    
+    try:
+        for chunk in wrapper:
+            raise ValueError("abort loop")
+    except ValueError:
+        pass
+        
+    assert called == [b"chunk1"]
+
+def test_client_cleanup_and_close(monkeypatch):
+    import warnings
+    from computecapx import ComputeCapClient
+    import computecapx.client as _client_mod
+    
+    monkeypatch.setattr(_client_mod, "_load_persisted_config", lambda: {"api_key": "dummy"})
+    
+    client = ComputeCapClient(api_key="test-key")
+    assert client._batch_thread.is_alive()
+    
+    # Close the client
+    client.close()
+    
+    # Thread should be joined and stopped
+    assert not client._batch_thread.is_alive()
