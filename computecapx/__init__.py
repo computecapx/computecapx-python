@@ -25,7 +25,7 @@ See https://computecapx.com/docs for the full documentation.
 """
 
 from .wrapper import instrument, ComputeCapTelemetry
-from .wrapper import ComputeCapBudgetExceededError, ComputeCapRunawayLoopError
+from .wrapper import ComputeCapBudgetExceededError, ComputeCapAILoopBlocker
 from .client import ComputeCapClient
 from .detector import EnvironmentDetector
 
@@ -43,7 +43,7 @@ __all__ = [
     "EnvironmentDetector",
     # Exception types
     "ComputeCapBudgetExceededError",
-    "ComputeCapRunawayLoopError",
+    "ComputeCapAILoopBlocker",
     # Package metadata
     "__version__",
 ]

@@ -34,9 +34,9 @@ def test_instrument_is_callable():
 
 def test_exception_types_are_base_exceptions():
     """Budget and loop errors must inherit from BaseException so they can't be swallowed by bare `except Exception`."""
-    from computecapx import ComputeCapBudgetExceededError, ComputeCapRunawayLoopError
+    from computecapx import ComputeCapBudgetExceededError, ComputeCapAILoopBlocker
     assert issubclass(ComputeCapBudgetExceededError, BaseException)
-    assert issubclass(ComputeCapRunawayLoopError, BaseException)
+    assert issubclass(ComputeCapAILoopBlocker, BaseException)
 
 
 def test_client_instantiates_without_api_key(monkeypatch):

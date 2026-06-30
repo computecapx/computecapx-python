@@ -165,27 +165,46 @@ class EnvironmentDetector:
             edge["instance_type"] = "serverless"
             return edge
 
-        # 2. Check standard Cloud Metadata IPs
-        aws_data = cls._ping_aws()
-        if aws_data:
-            return {"provider": "aws", "resource_id": aws_data["resource_id"], "region": aws_data["region"], "instance_type": aws_data["instance_type"]}
-            
-        gcp_data = cls._ping_gcp()
-        if gcp_data:
-            return {"provider": "gcp", "resource_id": gcp_data["resource_id"], "region": gcp_data["region"], "instance_type": gcp_data["instance_type"]}
+        # 2. Check environment override to bypass network checks entirely
+        env_override = os.getenv("COMPUTECAPX_ENV")
+        if env_override:
+            env_override = env_override.lower()
+            if env_override in ("local", "dev", "development"):
+                node_name = platform.node() or "unknown-host"
+                return {"provider": "local", "resource_id": node_name, "region": "local", "instance_type": "local-machine"}
+            elif env_override in ("aws", "gcp", "azure", "oci", "digitalocean"):
+                node_name = platform.node() or "unknown-host"
+                return {"provider": env_override, "resource_id": node_name, "region": "override", "instance_type": "override"}
 
-        azure_data = cls._ping_azure()
-        if azure_data:
-            return {"provider": "azure", "resource_id": azure_data["resource_id"], "region": azure_data["region"], "instance_type": azure_data["instance_type"]}
-            
-        oci_data = cls._ping_oci()
-        if oci_data:
-            return {"provider": "oci", "resource_id": oci_data["resource_id"], "region": oci_data["region"], "instance_type": oci_data["instance_type"]}
-            
-        do_data = cls._ping_digitalocean()
-        if do_data:
-            return {"provider": "digitalocean", "resource_id": do_data["resource_id"], "region": do_data["region"], "instance_type": do_data["instance_type"]}
+        # 3. Check standard Cloud Metadata IPs concurrently to prevent sequential timeout delays
+        import concurrent.futures
 
-        # 3. Fallback to Local/Container
+        check_fns = [
+            ("aws", cls._ping_aws),
+            ("gcp", cls._ping_gcp),
+            ("azure", cls._ping_azure),
+            ("oci", cls._ping_oci),
+            ("digitalocean", cls._ping_digitalocean),
+        ]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(fn): provider for provider, fn in check_fns}
+            # We want to return as soon as the first successful cloud ping finishes
+            # to avoid blocking on remaining timeouts.
+            for future in concurrent.futures.as_completed(futures):
+                provider = futures[future]
+                try:
+                    res = future.result()
+                    if res:
+                        return {
+                            "provider": provider,
+                            "resource_id": res["resource_id"],
+                            "region": res["region"],
+                            "instance_type": res["instance_type"]
+                        }
+                except Exception:
+                    pass
+
+        # 4. Fallback to Local/Container
         node_name = platform.node() or "unknown-host"
         return {"provider": "local", "resource_id": node_name, "region": "local", "instance_type": "local-machine"}

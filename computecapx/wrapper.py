@@ -23,6 +23,71 @@ trace_ctx: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar('comp
 
 _global_telemetry_engine = None
 
+class TelemetryStreamWrapper:
+    def __init__(self, original_stream, callback):
+        self._stream = original_stream
+        self._callback = callback
+        self._accumulated = []
+
+    def __iter__(self):
+        for chunk in self._stream:
+            self._accumulated.append(chunk)
+            yield chunk
+        self._callback(b"".join(self._accumulated))
+
+    def iter_bytes(self, *args, **kwargs):
+        for chunk in self._stream.iter_bytes(*args, **kwargs):
+            self._accumulated.append(chunk)
+            yield chunk
+        self._callback(b"".join(self._accumulated))
+
+    def read(self, *args, **kwargs):
+        chunk = self._stream.read(*args, **kwargs)
+        if chunk:
+            self._accumulated.append(chunk)
+        if not chunk:
+            self._callback(b"".join(self._accumulated))
+        return chunk
+
+    def close(self):
+        self._stream.close()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+class AsyncTelemetryStreamWrapper:
+    def __init__(self, original_stream, callback):
+        self._stream = original_stream
+        self._callback = callback
+        self._accumulated = []
+
+    async def __aiter__(self):
+        async for chunk in self._stream:
+            self._accumulated.append(chunk)
+            yield chunk
+        self._callback(b"".join(self._accumulated))
+
+    async def aiter_bytes(self, *args, **kwargs):
+        async for chunk in self._stream.aiter_bytes(*args, **kwargs):
+            self._accumulated.append(chunk)
+            yield chunk
+        self._callback(b"".join(self._accumulated))
+
+    async def read(self, *args, **kwargs):
+        chunk = await self._stream.read(*args, **kwargs)
+        if chunk:
+            self._accumulated.append(chunk)
+        if not chunk:
+            self._callback(b"".join(self._accumulated))
+        return chunk
+
+    async def aclose(self):
+        await self._stream.aclose()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
 def _get_active_trace() -> str:
     ctx = trace_ctx.get()
     now = time.time()
@@ -244,7 +309,7 @@ class ComputeCapBudgetExceededError(BaseException):
     """Raised when a workspace has exceeded its financial tier limits."""
     pass
 
-class ComputeCapRunawayLoopError(BaseException):
+class ComputeCapAILoopBlocker(BaseException):
     """Raised when an AI agent enters an infinite loop, threatening severe financial leak."""
     pass
 
@@ -327,8 +392,8 @@ class ComputeCapTelemetry:
                     "20 requests to %s (%s) attempted in %.2fs. Task permanently blocked.",
                     provider.upper(), model, net_window
                 )
-                raise ComputeCapRunawayLoopError(
-                    "ComputeCapX : Rapid repetitive requests detected (potential infinite loop). "
+                raise ComputeCapAILoopBlocker(
+                    "ComputeCapX : AI Loop Blocker activated. Rapid repetitive requests detected (potential infinite loop). "
                     "Terminated to prevent resource exhaustion."
                 )
                 
@@ -755,21 +820,28 @@ class ComputeCapTelemetry:
             @functools.wraps(original_httpx_send)
             def intercepted_httpx_send(client_self, request, *args, **kwargs):
                 provider, model = None, None
+                body_bytes = b""
                 if request.method == "POST":
                     try:
-                        # Safely read body without consuming streaming iterators
-                        body_bytes = b""
-                        if hasattr(request, "stream") and isinstance(request.stream, httpx.ByteStream):
-                            body_bytes = request.read()
-                        if body_bytes:
-                            provider, model = _extract_ai_context(str(request.url).lower(), body_bytes)
-                            if provider and model:
-                                p_text, l_msg, m_list = _extract_prompt_details(body_bytes)
-                                throttle = self._check_runaway_loop(provider, model, p_text, l_msg, m_list)
-                                if throttle > 0:
-                                    time.sleep(throttle)
-                                self._check_budget_and_raise(provider=provider, model=model)
-                    except (ComputeCapRunawayLoopError, ComputeCapBudgetExceededError) as e:
+                        url_str = str(request.url).lower()
+                        parsed_url = urllib.parse.urlparse(url_str)
+                        request_host = parsed_url.hostname or ""
+                        backend_host = urllib.parse.urlparse(self.client.backend_url).hostname
+                        
+                        if request_host != backend_host:
+                            cl = request.headers.get("content-length")
+                            if not (cl and cl.isdigit() and int(cl) > 10 * 1024 * 1024):
+                                if hasattr(request, "stream") and isinstance(request.stream, httpx.ByteStream):
+                                    body_bytes = request.read()
+                                if body_bytes:
+                                    provider, model = _extract_ai_context(url_str, body_bytes)
+                                    if provider and model:
+                                        p_text, l_msg, m_list = _extract_prompt_details(body_bytes)
+                                        throttle = self._check_runaway_loop(provider, model, p_text, l_msg, m_list)
+                                        if throttle > 0:
+                                            time.sleep(throttle)
+                                        self._check_budget_and_raise(provider=provider, model=model)
+                    except (ComputeCapAILoopBlocker, ComputeCapBudgetExceededError) as e:
                         raise e
                     except Exception:
                         pass
@@ -792,15 +864,14 @@ class ComputeCapTelemetry:
                                 t_out = usage.get("completion_tokens") or usage.get("output_tokens") or 0
                                 self._transmit(provider, model, t_in, t_out)
                         elif response.status_code == 200 and "text/event-stream" in content_type:
-                            # Streaming response — buffer full SSE and parse usage
-                            stream_bytes = response.read()
-                            t_in, t_out = _parse_sse_usage(stream_bytes)
-                            # Fallback: OpenAI default streaming has no usage in SSE
-                            # — estimate input tokens from request body
-                            if t_in == 0:
-                                t_in = _estimate_input_tokens(body_bytes)
-                            if t_in > 0 or t_out > 0:
-                                self._transmit(provider, model, t_in, t_out)
+                            # Streaming response — wrap stream to capture SSE chunks on the fly
+                            def on_close(stream_bytes):
+                                t_in, t_out = _parse_sse_usage(stream_bytes)
+                                if t_in == 0:
+                                    t_in = _estimate_input_tokens(body_bytes)
+                                if t_in > 0 or t_out > 0:
+                                    self._transmit(provider, model, t_in, t_out)
+                            response.stream = TelemetryStreamWrapper(response.stream, on_close)
                     except Exception:
                         pass
                 return response
@@ -812,21 +883,28 @@ class ComputeCapTelemetry:
             @functools.wraps(original_httpx_send_async)
             async def intercepted_httpx_send_async(client_self, request, *args, **kwargs):
                 provider, model = None, None
+                body_bytes = b""
                 if request.method == "POST":
                     try:
-                        # Safely read body without consuming streaming iterators
-                        body_bytes = b""
-                        if hasattr(request, "stream") and isinstance(request.stream, httpx.ByteStream):
-                            body_bytes = request.read()
-                        if body_bytes:
-                            provider, model = _extract_ai_context(str(request.url).lower(), body_bytes)
-                            if provider and model:
-                                p_text, l_msg, m_list = _extract_prompt_details(body_bytes)
-                                throttle = self._check_runaway_loop(provider, model, p_text, l_msg, m_list)
-                                if throttle > 0:
-                                    await asyncio.sleep(throttle)
-                                self._check_budget_and_raise(provider=provider, model=model)
-                    except (ComputeCapRunawayLoopError, ComputeCapBudgetExceededError) as e:
+                        url_str = str(request.url).lower()
+                        parsed_url = urllib.parse.urlparse(url_str)
+                        request_host = parsed_url.hostname or ""
+                        backend_host = urllib.parse.urlparse(self.client.backend_url).hostname
+                        
+                        if request_host != backend_host:
+                            cl = request.headers.get("content-length")
+                            if not (cl and cl.isdigit() and int(cl) > 10 * 1024 * 1024):
+                                if hasattr(request, "stream") and isinstance(request.stream, httpx.ByteStream):
+                                    body_bytes = request.read()
+                                if body_bytes:
+                                    provider, model = _extract_ai_context(url_str, body_bytes)
+                                    if provider and model:
+                                        p_text, l_msg, m_list = _extract_prompt_details(body_bytes)
+                                        throttle = self._check_runaway_loop(provider, model, p_text, l_msg, m_list)
+                                        if throttle > 0:
+                                            await asyncio.sleep(throttle)
+                                        self._check_budget_and_raise(provider=provider, model=model)
+                    except (ComputeCapAILoopBlocker, ComputeCapBudgetExceededError) as e:
                         raise e
                     except Exception:
                         pass
@@ -849,14 +927,14 @@ class ComputeCapTelemetry:
                                 t_out = usage.get("completion_tokens") or usage.get("output_tokens") or 0
                                 self._transmit(provider, model, t_in, t_out)
                         elif response.status_code == 200 and "text/event-stream" in content_type:
-                            # Streaming response — buffer full SSE and parse usage
-                            stream_bytes = await response.aread()
-                            t_in, t_out = _parse_sse_usage(stream_bytes)
-                            # Fallback: estimate input tokens from request body
-                            if t_in == 0:
-                                t_in = _estimate_input_tokens(body_bytes)
-                            if t_in > 0 or t_out > 0:
-                                self._transmit(provider, model, t_in, t_out)
+                            # Streaming response — wrap stream to capture SSE chunks on the fly asynchronously
+                            def on_close(stream_bytes):
+                                t_in, t_out = _parse_sse_usage(stream_bytes)
+                                if t_in == 0:
+                                    t_in = _estimate_input_tokens(body_bytes)
+                                if t_in > 0 or t_out > 0:
+                                    self._transmit(provider, model, t_in, t_out)
+                            response.stream = AsyncTelemetryStreamWrapper(response.stream, on_close)
                     except Exception:
                         pass
                 return response
@@ -873,19 +951,29 @@ class ComputeCapTelemetry:
             @functools.wraps(original_requests_send)
             def intercepted_requests_send(client_self, request, *args, **kwargs):
                 provider, model = None, None
+                body_bytes = b""
                 if request.method == "POST" and request.body:
                     try:
-                        body_bytes = request.body if isinstance(request.body, bytes) else str(request.body).encode("utf-8")
-                        provider, model = _extract_ai_context(str(request.url).lower(), body_bytes)
-                        if provider and model:
-                            p_text, l_msg, m_list = _extract_prompt_details(body_bytes)
-                            wrapper = _global_telemetry_engine
-                            if wrapper:
-                                throttle = wrapper._check_runaway_loop(provider, model, p_text, l_msg, m_list)
-                                if throttle > 0:
-                                    time.sleep(throttle)
-                                wrapper._check_budget_and_raise(provider=provider, model=model)
-                    except (ComputeCapRunawayLoopError, ComputeCapBudgetExceededError) as e:
+                        wrapper = _global_telemetry_engine
+                        if wrapper:
+                            url_str = str(request.url).lower()
+                            parsed_url = urllib.parse.urlparse(url_str)
+                            request_host = parsed_url.hostname or ""
+                            backend_host = urllib.parse.urlparse(wrapper.client.backend_url).hostname
+                            
+                            if request_host != backend_host:
+                                cl = request.headers.get("content-length")
+                                if not (cl and cl.isdigit() and int(cl) > 10 * 1024 * 1024):
+                                    body_bytes = request.body if isinstance(request.body, bytes) else str(request.body).encode("utf-8")
+                                    if body_bytes:
+                                        provider, model = _extract_ai_context(url_str, body_bytes)
+                                        if provider and model:
+                                            p_text, l_msg, m_list = _extract_prompt_details(body_bytes)
+                                            throttle = wrapper._check_runaway_loop(provider, model, p_text, l_msg, m_list)
+                                            if throttle > 0:
+                                                time.sleep(throttle)
+                                            wrapper._check_budget_and_raise(provider=provider, model=model)
+                    except (ComputeCapAILoopBlocker, ComputeCapBudgetExceededError) as e:
                         raise e
                     except Exception:
                         pass
@@ -911,14 +999,23 @@ class ComputeCapTelemetry:
                                 t_out = usage.get("completion_tokens") or usage.get("output_tokens") or 0
                                 _global_telemetry_engine._transmit(provider, model, t_in, t_out)
                         elif response.status_code == 200 and "text/event-stream" in content_type:
-                            # Streaming response — buffer full SSE and parse usage
-                            stream_bytes = response.content  # .content buffers the full stream
-                            t_in, t_out = _parse_sse_usage(stream_bytes)
-                            # Fallback: estimate input tokens from request body
-                            if t_in == 0:
-                                t_in = _estimate_input_tokens(body_bytes)
-                            if (t_in > 0 or t_out > 0) and _global_telemetry_engine:
-                                _global_telemetry_engine._transmit(provider, model, t_in, t_out)
+                            # Streaming response — wrap content iterator to capture SSE chunks on the fly
+                            original_iter_content = response.iter_content
+                            accumulated_chunks = []
+                            
+                            def wrapped_iter_content(*i_args, **i_kwargs):
+                                for chunk in original_iter_content(*i_args, **i_kwargs):
+                                    accumulated_chunks.append(chunk)
+                                    yield chunk
+                                # Stream fully consumed
+                                full_content = b"".join(accumulated_chunks)
+                                t_in, t_out = _parse_sse_usage(full_content)
+                                if t_in == 0:
+                                    t_in = _estimate_input_tokens(body_bytes)
+                                if (t_in > 0 or t_out > 0) and _global_telemetry_engine:
+                                    _global_telemetry_engine._transmit(provider, model, t_in, t_out)
+                                    
+                            response.iter_content = wrapped_iter_content
                     except Exception:
                         pass
                 return response

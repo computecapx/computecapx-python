@@ -50,16 +50,19 @@ def _load_dotenv_file() -> Dict[str, str]:
     return loaded
 
 
+_config_lock = threading.Lock()
+
 def _load_persisted_config() -> Dict[str, str]:
     """Helper to safely retrieve CLI-persisted configuration from the user's home directory."""
     config_file = Path.home() / ".computecapx" / "config.json"
     if config_file.exists():
-        try:
-            with open(config_file, "r") as f:
-                return json.load(f)
-        except Exception:
-            # Silence internal file load exceptions to prevent host app disruption
-            pass
+        with _config_lock:
+            try:
+                with open(config_file, "r") as f:
+                    return json.load(f)
+            except Exception:
+                # Silence internal file load exceptions to prevent host app disruption
+                pass
     return {}
 
 def _save_persisted_config(config: Dict[str, Any]) -> None:
@@ -69,19 +72,28 @@ def _save_persisted_config(config: Dict[str, Any]) -> None:
         config_dir.mkdir(parents=True, exist_ok=True)
         config_file = config_dir / "config.json"
         
-        # Load existing config to merge it
-        existing = {}
-        if config_file.exists():
+        with _config_lock:
+            # Load existing config to merge it
+            existing = {}
+            if config_file.exists():
+                try:
+                    with open(config_file, "r") as f:
+                        existing = json.load(f)
+                except Exception:
+                    pass
+                    
+            existing.update(config)
+            
+            # Atomic write pattern to prevent file corruption
+            tmp_file = config_file.with_suffix(".tmp")
             try:
-                with open(config_file, "r") as f:
-                    existing = json.load(f)
+                with open(tmp_file, "w") as f:
+                    json.dump(existing, f)
+                tmp_file.replace(config_file)
             except Exception:
-                pass
-                
-        existing.update(config)
-        
-        with open(config_file, "w") as f:
-            json.dump(existing, f)
+                if tmp_file.exists():
+                    tmp_file.unlink()
+                raise
     except Exception:
         pass
 
@@ -132,11 +144,16 @@ class ComputeCapClient:
     def flush(self) -> None:
         """Blocks until all active telemetry requests are completed."""
         self._shutdown_event.set()
+        
+        # Gracefully join the daemon batch thread to prevent telemetry data loss on exit
+        if hasattr(self, "_batch_thread") and self._batch_thread.is_alive():
+            self._batch_thread.join(timeout=2.0)
+
         with self._thread_lock:
             threads_to_join = list(self._active_threads)
         for t in threads_to_join:
             if t.is_alive():
-                t.join(timeout=8.0)
+                t.join(timeout=4.0)
                 
         # Drain remaining events in the batch queue
         batch = []
@@ -244,12 +261,16 @@ class ComputeCapClient:
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
 
+        with self._thread_lock:
+            self._active_threads = [t for t in self._active_threads if t.is_alive()]
+            # Bound parallel thread spawning to 15 to avoid resource exhaustion
+            if len(self._active_threads) >= 15:
+                return
+
         thread = threading.Thread(target=_post, daemon=True)
         with self._thread_lock:
             self._active_threads.append(thread)
             thread.start()
-            # Cleanup dead threads to prevent memory leak on long-running processes
-            self._active_threads = [t for t in self._active_threads if t.is_alive()]
 
     def record_ai_telemetry(self, payload: Dict[str, Any]) -> None:
         """Transmits AI token usage and cost metrics asynchronously with up to 3 retries."""
