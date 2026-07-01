@@ -29,9 +29,9 @@ from .wrapper import ComputeCapBudgetExceededError, ComputeCapAILoopBlocker
 from .client import ComputeCapClient
 from .detector import EnvironmentDetector
 
-__version__ = "1.0.0"
-__author__ = "ComputeCap"
-__email__ = "support@computecap.io"
+__version__ = "0.1.0"
+__author__ = "computecapx"
+__email__ = "computecapx@gmail.com"
 __license__ = "MIT"
 
 __all__ = [

@@ -1,23 +1,23 @@
 [project]
 name = "computecapx"
-version = "1.0.0"
+version = "0.1.0"
 description = "Enterprise FinOps & AI governance SDK — monitor costs, enforce budgets, and prevent runaway AI loops across every cloud provider."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.8"
 authors = [
-    { name = "ComputeCap", email = "support@computecap.io" }
+    { name = "computecapx", email = "computecapx@gmail.com" }
 ]
 maintainers = [
-    { name = "ComputeCap", email = "support@computecap.io" }
+    { name = "computecapx", email = "computecapx@gmail.com" }
 ]
 keywords = [
     "finops", "ai", "monitoring", "llm", "cost", "governance",
     "openai", "anthropic", "gemini", "cloud", "telemetry", "observability"
 ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
     "Topic :: Software Development :: Libraries :: Python Modules",
