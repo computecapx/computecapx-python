@@ -159,7 +159,8 @@ def _get_token_similarity(s1: str, s2: str) -> float:
 def _has_internal_message_repetition(messages_list: List[str]) -> bool:
     if not messages_list:
         return False
-    counts = collections.Counter(messages_list)
+    recent_messages = messages_list[-5:]
+    counts = collections.Counter(recent_messages)
     for msg, count in counts.items():
         if len(msg) > 20 and count >= 3:
             return True
@@ -833,22 +834,41 @@ class ComputeCapTelemetry:
 
         def _extract_ai_context(url_str: str, body_bytes: bytes) -> Tuple[Optional[str], Optional[str]]:
             try:
-                body = json.loads(body_bytes)
-                model_name = body.get("model")
-                if not model_name:
-                    return None, None 
+                model_name = None
+                try:
+                    body = json.loads(body_bytes) if body_bytes else {}
+                    model_name = body.get("model")
+                except Exception:
+                    pass
                     
                 parsed_url = urllib.parse.urlparse(url_str)
                 hostname = parsed_url.hostname or ""
+                path = parsed_url.path or ""
                 
+                if not model_name:
+                    if "googleapis.com" in hostname and "/models/" in path:
+                        parts = path.split("/models/")
+                        if len(parts) > 1:
+                            model_name = parts[1].split(":")[0]
+                    elif "openai.azure.com" in hostname and "/deployments/" in path:
+                        parts = path.split("/deployments/")
+                        if len(parts) > 1:
+                            model_name = parts[1].split("/")[0]
+
+                if not model_name:
+                    return None, None
+                    
                 if "googleapis.com" in hostname:
                     provider = "google"
+                elif "openai.azure.com" in hostname:
+                    provider = "azure"
                 else:
                     domain_parts = hostname.split(".")
                     if len(domain_parts) >= 2:
                         provider = domain_parts[-2] 
                     else:
                         provider = hostname
+                    
                 return provider, model_name
             except Exception:
                 return None, None
@@ -943,7 +963,13 @@ class ComputeCapTelemetry:
                                         throttle = self._check_runaway_loop(provider, model, p_text, l_msg, m_list)
                                         if throttle > 0:
                                             await asyncio.sleep(throttle)
-                                        self._check_budget_and_raise(provider=provider, model=model)
+                                        
+                                        loop = asyncio.get_event_loop()
+                                        budget_ok = await loop.run_in_executor(
+                                            None, self.client.check_budget_sync, self.project_id, provider, model
+                                        )
+                                        if not budget_ok:
+                                            raise ComputeCapBudgetExceededError("ComputeCapX : Monthly AI budget threshold exceeded.")
                     except (ComputeCapAILoopBlocker, ComputeCapBudgetExceededError) as e:
                         raise e
                     except Exception:
@@ -1093,6 +1119,7 @@ class ComputeCapTelemetry:
                 wrapper = _global_telemetry_engine
                 if wrapper and wrapper.client:
                     import urllib.parse
+                    parsed = urllib.parse.urlparse(wrapper.client.backend_url)
                     pool_host = (self_pool.host or "").lower()
                     parsed_host = (parsed.hostname or "").lower()
                     if pool_host == parsed_host:
