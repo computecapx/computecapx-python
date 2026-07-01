@@ -368,6 +368,13 @@ class ComputeCapTelemetry:
         except Exception:
             self.last_bytes_sent = 0.0
 
+    @property
+    def active_project_id(self) -> str:
+        ctx = trace_ctx.get()
+        if ctx and isinstance(ctx, dict) and "project_id" in ctx:
+            return ctx["project_id"]
+        return self.project_id
+
     def _check_runaway_loop(self, provider: str, model: str, prompt_text: str = "", last_msg: str = "", messages_list: Optional[List[str]] = None) -> float:
         """
         Enterprise-grade context-isolated circuit breaker.
@@ -421,7 +428,7 @@ class ComputeCapTelemetry:
             net_window = get_net_elapsed(0)
             if net_window < 60.0:  # Evaluated on net elapsed time (excluding warn sleeps)
                 emergency_payload = {
-                    "project_id": self.project_id,
+                    "project_id": self.active_project_id,
                     "provider": provider,
                     "model_name": model,
                     "request_count": 20,
@@ -445,7 +452,7 @@ class ComputeCapTelemetry:
                     "[ComputeCapX] Rapid AI loop detected. Applying 5s mitigation throttle."
                 )
                 throttle_payload = {
-                    "project_id": self.project_id,
+                    "project_id": self.active_project_id,
                     "provider": provider,
                     "model_name": model,
                     "tokens_in": 0,
@@ -465,7 +472,7 @@ class ComputeCapTelemetry:
                     "[ComputeCapX] Fast AI usage detected. Applying 2s warning throttle."
                 )
                 throttle_payload = {
-                    "project_id": self.project_id,
+                    "project_id": self.active_project_id,
                     "provider": provider,
                     "model_name": model,
                     "tokens_in": 0,
@@ -477,19 +484,19 @@ class ComputeCapTelemetry:
                 self.client._send_async("telemetry/ai", throttle_payload)
                 history[-1]["sleep_duration"] = 2.0
                 return 2.0
-
+ 
         return 0.0
-
+ 
     def _check_budget_and_raise(self, provider: str = "unknown", model: str = "unknown") -> None:
         """Check the AI budget limit and raise ComputeCapBudgetExceededError if exceeded."""
-        if not self.client.check_budget_sync(self.project_id, provider=provider, model=model):
+        if not self.client.check_budget_sync(self.active_project_id, provider=provider, model=model):
             _logger.critical(
                 "[ComputeCapX] CRITICAL: Monthly AI budget limit reached. "
                 "Request blocked to prevent cost overruns. "
                 "Update your budget limit in the dashboard to continue."
             )
             raise ComputeCapBudgetExceededError("ComputeCapX : Monthly AI budget threshold exceeded. Request blocked to prevent cost overruns.")
-
+ 
     def _transmit(self, provider: str, model: str, t_in: int, t_out: int):
         try:
             _logger.debug(
@@ -497,7 +504,7 @@ class ComputeCapTelemetry:
                 provider.upper(), model, t_in, t_out
             )
             telemetry_payload = {
-                "project_id": self.project_id,
+                "project_id": self.active_project_id,
                 "trace_id": _get_active_trace(),
                 "provider": provider,
                 "model_name": model,
@@ -579,7 +586,7 @@ class ComputeCapTelemetry:
                 
             try:
                 payload = {
-                    "project_id": self.project_id,
+                    "project_id": self.active_project_id,
                     "provider": self.environment.get("provider", "local"),
                     "resource_id": self.environment.get("resource_id", "unknown"),
                     "status": "ACTIVE",
@@ -966,7 +973,7 @@ class ComputeCapTelemetry:
                                         
                                         loop = asyncio.get_event_loop()
                                         budget_ok = await loop.run_in_executor(
-                                            None, self.client.check_budget_sync, self.project_id, provider, model
+                                            None, self.client.check_budget_sync, self.active_project_id, provider, model
                                         )
                                         if not budget_ok:
                                             raise ComputeCapBudgetExceededError("ComputeCapX : Monthly AI budget threshold exceeded.")

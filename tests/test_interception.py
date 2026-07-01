@@ -76,3 +76,18 @@ def test_interception_flow(mock_backend):
         asyncio.run(run_async())
     except Exception as e:
         pytest.fail(f"Httpx async interceptor raised an error: {e}")
+
+def test_budget_cooldown_cache():
+    from computecapx.client import ComputeCapClient
+    client = ComputeCapClient(api_key="test-key", backend_url="http://127.0.0.1:9999/api/v1")
+    
+    # Manually trigger budget limit 403 response emulation
+    client._budget_blocked = True
+    client._budget_blocked_until = time.time() + 10.0
+    
+    # The check should instantly fail-fast and return False without attempting any network requests
+    start = time.time()
+    assert client.check_budget_sync("project-x") is False
+    # Verified it returned instantly (no timeout delay)
+    assert time.time() - start < 0.1
+

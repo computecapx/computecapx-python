@@ -1,8 +1,7 @@
-"""Autonomous cloud environment detection for the ComputeCapX SDK."""
-
 import os
 import requests
 import platform
+import threading
 from typing import Dict, Optional
 
 class EnvironmentDetector:
@@ -15,6 +14,7 @@ class EnvironmentDetector:
     # Short timeout prevents latency in non-cloud or unsupported environments.
     METADATA_TIMEOUT = 1.0  
     _cached_env = None
+    _detection_lock = threading.Lock()
 
     @staticmethod
     def _ping_aws() -> Optional[Dict[str, str]]:
@@ -162,66 +162,70 @@ class EnvironmentDetector:
         if cls._cached_env is not None:
             return cls._cached_env
 
-        def _cache_and_return(res):
-            cls._cached_env = res
-            return res
+        with cls._detection_lock:
+            if cls._cached_env is not None:
+                return cls._cached_env
 
-        # 1. Check Edge/Serverless first (Environment variables are instant)
-        edge = cls._check_edge()
-        if edge:
-            edge["region"] = "global"
-            edge["instance_type"] = "serverless"
-            return _cache_and_return(edge)
+            def _cache_and_return(res):
+                cls._cached_env = res
+                return res
 
-        # 2. Check environment override to bypass network checks entirely
-        env_override = os.getenv("COMPUTECAPX_ENV")
-        if env_override:
-            env_override = env_override.lower()
-            if env_override in ("local", "dev", "development"):
-                node_name = platform.node() or "unknown-host"
-                return _cache_and_return({"provider": "local", "resource_id": node_name, "region": "local", "instance_type": "local-machine"})
-            elif env_override in ("aws", "gcp", "azure", "oci", "digitalocean"):
-                node_name = platform.node() or "unknown-host"
-                return _cache_and_return({"provider": env_override, "resource_id": node_name, "region": "override", "instance_type": "override"})
+            # 1. Check Edge/Serverless first (Environment variables are instant)
+            edge = cls._check_edge()
+            if edge:
+                edge["region"] = "global"
+                edge["instance_type"] = "serverless"
+                return _cache_and_return(edge)
 
-        # 3. Check standard Cloud Metadata IPs concurrently using daemon threads to prevent interpreter exit hangs
-        import threading
-        import queue
+            # 2. Check environment override to bypass network checks entirely
+            env_override = os.getenv("COMPUTECAPX_ENV")
+            if env_override:
+                env_override = env_override.lower()
+                if env_override in ("local", "dev", "development"):
+                    node_name = platform.node() or "unknown-host"
+                    return _cache_and_return({"provider": "local", "resource_id": node_name, "region": "local", "instance_type": "local-machine"})
+                elif env_override in ("aws", "gcp", "azure", "oci", "digitalocean"):
+                    node_name = platform.node() or "unknown-host"
+                    return _cache_and_return({"provider": env_override, "resource_id": node_name, "region": "override", "instance_type": "override"})
 
-        check_fns = [
-            ("aws", cls._ping_aws),
-            ("gcp", cls._ping_gcp),
-            ("azure", cls._ping_azure),
-            ("oci", cls._ping_oci),
-            ("digitalocean", cls._ping_digitalocean),
-        ]
+            # 3. Check standard Cloud Metadata IPs concurrently using daemon threads to prevent interpreter exit hangs
+            import threading
+            import queue
 
-        results = queue.Queue()
+            check_fns = [
+                ("aws", cls._ping_aws),
+                ("gcp", cls._ping_gcp),
+                ("azure", cls._ping_azure),
+                ("oci", cls._ping_oci),
+                ("digitalocean", cls._ping_digitalocean),
+            ]
 
-        def worker(provider, fn):
+            results = queue.Queue()
+
+            def worker(provider, fn):
+                try:
+                    res = fn()
+                    if res:
+                        results.put((provider, res))
+                except Exception:
+                    pass
+
+            for provider, fn in check_fns:
+                t = threading.Thread(target=worker, args=(provider, fn), daemon=True)
+                t.start()
+
             try:
-                res = fn()
-                if res:
-                    results.put((provider, res))
-            except Exception:
+                # Block at most METADATA_TIMEOUT for the first successful cloud metadata ping
+                provider, res = results.get(timeout=cls.METADATA_TIMEOUT)
+                return _cache_and_return({
+                    "provider": provider,
+                    "resource_id": res["resource_id"],
+                    "region": res["region"],
+                    "instance_type": res["instance_type"]
+                })
+            except queue.Empty:
                 pass
 
-        for provider, fn in check_fns:
-            t = threading.Thread(target=worker, args=(provider, fn), daemon=True)
-            t.start()
-
-        try:
-            # Block at most METADATA_TIMEOUT for the first successful cloud metadata ping
-            provider, res = results.get(timeout=cls.METADATA_TIMEOUT)
-            return _cache_and_return({
-                "provider": provider,
-                "resource_id": res["resource_id"],
-                "region": res["region"],
-                "instance_type": res["instance_type"]
-            })
-        except queue.Empty:
-            pass
-
-        # 4. Fallback to Local/Container
-        node_name = platform.node() or "unknown-host"
-        return _cache_and_return({"provider": "local", "resource_id": node_name, "region": "local", "instance_type": "local-machine"})
+            # 4. Fallback to Local/Container
+            node_name = platform.node() or "unknown-host"
+            return _cache_and_return({"provider": "local", "resource_id": node_name, "region": "local", "instance_type": "local-machine"})

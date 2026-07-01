@@ -36,6 +36,11 @@ def _load_dotenv_file() -> Dict[str, str]:
                             continue
                         key, value = line.split("=", 1)
                         key = key.strip()
+                        # Clean inline comments
+                        if "#" in value:
+                            # Avoid stripping if '#' is inside quotes
+                            if not (value.startswith('"') and value.endswith('"')) and not (value.startswith("'") and value.endswith("'")):
+                                value = value.split("#", 1)[0]
                         value = value.strip().strip('"').strip("'")
                         if key and key not in os.environ and key not in loaded:
                             os.environ[key] = value
@@ -127,12 +132,19 @@ class ComputeCapClient:
         )
         
         # 2. Resolve Backend URL: Constructor parameter -> Environment Variable -> CLI JSON Stored Config -> Local Fallback
-        self.backend_url = (
+        raw_url = (
             backend_url 
             or os.getenv("COMPUTECAPX_BACKEND_URL")
             or stored_config.get("backend_url") 
             or self.DEFAULT_API_URL
         )
+        raw_url = raw_url.rstrip("/")
+        if not raw_url.endswith("/api/v1"):
+            raw_url = f"{raw_url}/api/v1"
+        self.backend_url = raw_url
+        
+        self._budget_blocked = False
+        self._budget_blocked_until = 0.0
         
         if not self.api_key:
             import warnings
@@ -331,6 +343,11 @@ class ComputeCapClient:
         Synchronous pre-flight check to determine if the project has exceeded its budget.
         Sends a 0-cost diagnostic pulse. If the backend Firewall is active, it returns 403.
         """
+        current_time = time.time()
+        if self._budget_blocked and current_time < self._budget_blocked_until:
+            # Budget exceeded: fail-fast locally during cooldown to avoid application latency
+            return False
+
         if not self._require_preflight and self._has_done_initial_check:
             # Fast path: budget check is not required, skip the network round-trip.
             return True
@@ -368,6 +385,11 @@ class ComputeCapClient:
                     _logger.warning("[ComputeCapX] Budget limit reached: %s", error_msg)
                 except Exception:
                     pass
+                
+                # Cache budget failure for 60 seconds to avoid blocking HTTP calls
+                self._budget_blocked = True
+                self._budget_blocked_until = time.time() + 60.0
+
                 if not self._require_preflight:
                     self._require_preflight = True
                     threading.Thread(
@@ -377,6 +399,8 @@ class ComputeCapClient:
                     ).start()
                 return False
             elif res.status_code == 200:
+                self._budget_blocked = False
+                self._budget_blocked_until = 0.0
                 try:
                     data = res.json()
                     if isinstance(data, dict):

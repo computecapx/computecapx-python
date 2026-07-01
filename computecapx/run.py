@@ -44,8 +44,12 @@ def main():
     
     if not is_file:
         # Check if they are trying to run a global binary module (like uvicorn or gunicorn)
-        if not importlib.util.find_spec(target):
-            print(f"Error: Target script or module '{target}' not found.")
+        try:
+            if not importlib.util.find_spec(target):
+                print(f"Error: Target script or module '{target}' not found.")
+                sys.exit(1)
+        except ValueError:
+            print(f"Error: Invalid module structure or target '{target}' not found.")
             sys.exit(1)
 
     stored_config = _load_persisted_config()
