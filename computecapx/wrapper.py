@@ -132,13 +132,19 @@ def _get_active_trace() -> str:
     ctx = trace_ctx.get()
     now = time.time()
     # Traces auto-reset after 60 seconds to prevent context bleed across ThreadPool workers.
-    if ctx is None or (now - ctx['started_at']) > 60.0:
-        ctx = {
+    if ctx is None or not isinstance(ctx, dict) or "started_at" not in ctx or (now - ctx["started_at"]) > 60.0:
+        new_ctx = {
             "trace_id": f"txn_{uuid.uuid4().hex[:12]}",
             "started_at": now
         }
+        if isinstance(ctx, dict):
+            # Preserve existing metadata like custom project_id
+            for k, v in ctx.items():
+                if k not in ("trace_id", "started_at"):
+                    new_ctx[k] = v
+        ctx = new_ctx
         trace_ctx.set(ctx)
-    return ctx["trace_id"]
+    return ctx.get("trace_id") or ""
 
 from .client import ComputeCapClient
 from .detector import EnvironmentDetector
@@ -897,7 +903,8 @@ class ComputeCapTelemetry:
                         
                         if request_host != backend_host:
                             cl = request.headers.get("content-length")
-                            if not (cl and cl.isdigit() and int(cl) > 10 * 1024 * 1024):
+                            is_chunked = request.headers.get("transfer-encoding", "").lower() == "chunked"
+                            if cl and cl.isdigit() and int(cl) <= 10 * 1024 * 1024 and not is_chunked:
                                 if hasattr(request, "stream") and isinstance(request.stream, httpx.ByteStream):
                                     body_bytes = request.read()
                                 if body_bytes:
@@ -960,9 +967,10 @@ class ComputeCapTelemetry:
                         
                         if request_host != backend_host:
                             cl = request.headers.get("content-length")
-                            if not (cl and cl.isdigit() and int(cl) > 10 * 1024 * 1024):
-                                if hasattr(request, "stream") and isinstance(request.stream, httpx.ByteStream):
-                                    body_bytes = request.read()
+                            is_chunked = request.headers.get("transfer-encoding", "").lower() == "chunked"
+                            if cl and cl.isdigit() and int(cl) <= 10 * 1024 * 1024 and not is_chunked:
+                                if hasattr(request, "stream") and isinstance(request.stream, (httpx.ByteStream, httpx.AsyncByteStream)):
+                                    body_bytes = await request.aread()
                                 if body_bytes:
                                     provider, model = _extract_ai_context(url_str, body_bytes)
                                     if provider and model:

@@ -111,6 +111,13 @@ jobs:
                             if $Y:
                                 break
                             ...
+                - pattern-not:
+                    pattern: |
+                        while 1:
+                            ...
+                            if $Y:
+                                break
+                            ...
 
             - id: ban-budget-bypass-flags
               message: "CRITICAL: Business logic safety guard bypass detected. Disabling billing metrics, quota limits, or pricing calculations is prohibited."

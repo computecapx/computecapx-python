@@ -12,7 +12,7 @@ class EnvironmentDetector:
     """
     
     # Short timeout prevents latency in non-cloud or unsupported environments.
-    METADATA_TIMEOUT = 1.0  
+    METADATA_TIMEOUT = 0.2  
     _cached_env = None
     _detection_lock = threading.Lock()
 
@@ -22,7 +22,8 @@ class EnvironmentDetector:
             token_res = requests.put(
                 "http://169.254.169.254/latest/api/token",
                 headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
-                timeout=EnvironmentDetector.METADATA_TIMEOUT
+                timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                proxies={"http": None, "https": None}
             )
             
             headers = {}
@@ -32,17 +33,28 @@ class EnvironmentDetector:
             res = requests.get(
                 "http://169.254.169.254/latest/meta-data/instance-id", 
                 headers=headers,
-                timeout=EnvironmentDetector.METADATA_TIMEOUT
+                timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                proxies={"http": None, "https": None}
             )
             
             if res.status_code == 200 and res.text.startswith("i-"):
                 region, instance_type = "us-east-1", "unknown"
                 try:
-                    reg_res = requests.get("http://169.254.169.254/latest/meta-data/placement/region", headers=headers, timeout=EnvironmentDetector.METADATA_TIMEOUT)
+                    reg_res = requests.get(
+                        "http://169.254.169.254/latest/meta-data/placement/region", 
+                        headers=headers, 
+                        timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                        proxies={"http": None, "https": None}
+                    )
                     if reg_res.status_code == 200:
                         region = reg_res.text
                         
-                    type_res = requests.get("http://169.254.169.254/latest/meta-data/instance-type", headers=headers, timeout=EnvironmentDetector.METADATA_TIMEOUT)
+                    type_res = requests.get(
+                        "http://169.254.169.254/latest/meta-data/instance-type", 
+                        headers=headers, 
+                        timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                        proxies={"http": None, "https": None}
+                    )
                     if type_res.status_code == 200:
                         instance_type = type_res.text
                 except Exception:
@@ -57,16 +69,25 @@ class EnvironmentDetector:
         try:
             res = requests.get(
                 "http://169.254.169.254/metadata/v1/id", 
-                timeout=EnvironmentDetector.METADATA_TIMEOUT
+                timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                proxies={"http": None, "https": None}
             )
             if res.status_code == 200 and res.text.isdigit():
                 region, instance_type = "nyc3", "unknown"
                 try:
-                    reg_res = requests.get("http://169.254.169.254/metadata/v1/region", timeout=EnvironmentDetector.METADATA_TIMEOUT)
+                    reg_res = requests.get(
+                        "http://169.254.169.254/metadata/v1/region", 
+                        timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                        proxies={"http": None, "https": None}
+                    )
                     if reg_res.status_code == 200:
                         region = reg_res.text
                         
-                    size_res = requests.get("http://169.254.169.254/metadata/v1/size", timeout=EnvironmentDetector.METADATA_TIMEOUT)
+                    size_res = requests.get(
+                        "http://169.254.169.254/metadata/v1/size", 
+                        timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                        proxies={"http": None, "https": None}
+                    )
                     if size_res.status_code == 200:
                         instance_type = size_res.text
                 except Exception:
@@ -83,16 +104,27 @@ class EnvironmentDetector:
             res = requests.get(
                 "http://metadata.google.internal/computeMetadata/v1/instance/id", 
                 headers=headers,
-                timeout=EnvironmentDetector.METADATA_TIMEOUT
+                timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                proxies={"http": None, "https": None}
             )
             if res.status_code == 200:
                 zone, instance_type = "us-central1-a", "unknown"
                 try:
-                    zone_res = requests.get("http://metadata.google.internal/computeMetadata/v1/instance/zone", headers=headers, timeout=EnvironmentDetector.METADATA_TIMEOUT)
+                    zone_res = requests.get(
+                        "http://metadata.google.internal/computeMetadata/v1/instance/zone", 
+                        headers=headers, 
+                        timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                        proxies={"http": None, "https": None}
+                    )
                     if zone_res.status_code == 200:
                         zone = zone_res.text.split('/')[-1]
                         
-                    type_res = requests.get("http://metadata.google.internal/computeMetadata/v1/instance/machine-type", headers=headers, timeout=EnvironmentDetector.METADATA_TIMEOUT)
+                    type_res = requests.get(
+                        "http://metadata.google.internal/computeMetadata/v1/instance/machine-type", 
+                        headers=headers, 
+                        timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                        proxies={"http": None, "https": None}
+                    )
                     if type_res.status_code == 200:
                         instance_type = type_res.text.split('/')[-1]
                 except Exception:
@@ -108,7 +140,8 @@ class EnvironmentDetector:
             res = requests.get(
                 "http://169.254.169.254/metadata/instance?api-version=2021-02-01", 
                 headers={"Metadata": "true"},
-                timeout=EnvironmentDetector.METADATA_TIMEOUT
+                timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                proxies={"http": None, "https": None}
             )
             if res.status_code == 200:
                 data = res.json().get('compute', {})
@@ -131,7 +164,8 @@ class EnvironmentDetector:
             res = requests.get(
                 "http://169.254.169.254/opc/v2/instance/", 
                 headers=headers,
-                timeout=EnvironmentDetector.METADATA_TIMEOUT
+                timeout=EnvironmentDetector.METADATA_TIMEOUT,
+                proxies={"http": None, "https": None}
             )
             if res.status_code == 200:
                 data = res.json()

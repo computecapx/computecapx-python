@@ -90,7 +90,8 @@ def _save_persisted_config(config: Dict[str, Any]) -> None:
             existing.update(config)
             
             # Atomic write pattern to prevent file corruption (with retry loop for Windows sharing violations)
-            tmp_file = config_file.with_suffix(".tmp")
+            import uuid
+            tmp_file = config_file.parent / f"config.tmp.{uuid.uuid4().hex}"
             try:
                 with open(tmp_file, "w") as f:
                     json.dump(existing, f)
@@ -105,8 +106,11 @@ def _save_persisted_config(config: Dict[str, Any]) -> None:
                             raise
                         time.sleep(0.05)
             except Exception:
-                if tmp_file.exists():
-                    tmp_file.unlink()
+                try:
+                    if tmp_file.exists():
+                        tmp_file.unlink()
+                except Exception:
+                    pass
                 raise
     except Exception:
         pass
