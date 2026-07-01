@@ -1159,14 +1159,22 @@ class ComputeCapTelemetry:
                 
                 bytes_in = 0
                 status = "success"
+                is_error = False
+                error_message = None
                 try:
                     response = original_urlopen(self_pool, method, url, body=body, headers=headers, *args, **kwargs)
                     # Safe ingress calculation without consuming the socket stream
                     cl = response.headers.get("content-length") if hasattr(response, "headers") else None
                     if cl and cl.isdigit():
                         bytes_in = int(cl)
+                    if hasattr(response, "status") and response.status >= 400:
+                        status = f"error: HTTP {response.status}"
+                        is_error = True
+                        error_message = f"HTTP {response.status}"
                 except Exception as e:
                     status = f"error: {str(e)}"
+                    is_error = True
+                    error_message = str(e)
                     raise
                 finally:
                     latency_ms = (time.time() - start_time) * 1000
@@ -1198,7 +1206,9 @@ class ComputeCapTelemetry:
                             "bytes_in": bytes_in,
                             "io_read_bytes": io_read_delta,
                             "io_write_bytes": io_write_delta,
-                            "status": status
+                            "status": status,
+                            "is_error": is_error,
+                            "error_message": error_message
                         }
                         wrapper.client.record_trace_event(trace_payload)
 
@@ -1227,10 +1237,14 @@ class ComputeCapTelemetry:
                         pass
                         
                     status = "success"
+                    is_error = False
+                    error_message = None
                     try:
                         return super().execute(sql, *args, **kwargs)
                     except Exception as e:
                         status = f"error: {str(e)}"
+                        is_error = True
+                        error_message = str(e)
                         raise
                     finally:
                         latency_ms = (time.time() - start_time) * 1000
@@ -1259,7 +1273,9 @@ class ComputeCapTelemetry:
                                 "io_read_bytes": io_read_delta,
                                 "io_write_bytes": io_write_delta,
                                 "latency_ms": latency_ms,
-                                "status": status
+                                "status": status,
+                                "is_error": is_error,
+                                "error_message": error_message
                             }
                             wrapper.client.record_trace_event(trace_payload)
                             
@@ -1294,10 +1310,14 @@ class ComputeCapTelemetry:
                         pass
                         
                     status = "success"
+                    is_error = False
+                    error_message = None
                     try:
                         return super().execute(query, vars)
                     except Exception as e:
                         status = f"error: {str(e)}"
+                        is_error = True
+                        error_message = str(e)
                         raise
                     finally:
                         latency_ms = (time.time() - start_time) * 1000
@@ -1326,7 +1346,9 @@ class ComputeCapTelemetry:
                                 "io_read_bytes": io_read_delta,
                                 "io_write_bytes": io_write_delta,
                                 "latency_ms": latency_ms,
-                                "status": status
+                                "status": status,
+                                "is_error": is_error,
+                                "error_message": error_message
                             }
                             wrapper.client.record_trace_event(trace_payload)
                             
@@ -1361,6 +1383,8 @@ class ComputeCapTelemetry:
                         "method": "excepthook",
                         "status": f"FATAL CRASH: {exc_type.__name__ if exc_type else 'UnknownException'}: {str(exc_value)}",
                         "latency_ms": 0,
+                        "is_error": True,
+                        "error_message": f"{exc_type.__name__ if exc_type else 'UnknownException'}: {str(exc_value)}"
                     }
                     wrapper.client.record_trace_event(err_payload)
                     
