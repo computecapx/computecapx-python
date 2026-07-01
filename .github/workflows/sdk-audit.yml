@@ -1,0 +1,160 @@
+name: "SDK Strict Security & Logic Audit"
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  strict-audit:
+    name: Execute Full SDK Security Pipeline
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write  # Required to report security issues to the Security Tab
+
+    steps:
+      # Step 1: Check out code
+      - name: Checkout Code Base
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Step 2: Establish Python Environment for Python-specific tooling
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      # Step 3: Scan history for leaked API Keys, credentials, or cloud tokens
+      - name: Leaked Secrets Scan (TruffleHog)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ""
+          head: ${{ github.sha }}
+
+      # Step 4: Install SDK & Capture Dependencies
+      - name: Install SDK & Capture Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f pyproject.toml ]; then
+            pip install .
+          elif [ -f setup.py ]; then
+            pip install .
+          fi
+          pip freeze > temp_requirements.txt
+
+      # Step 5: STRICT Dependency Vulnerability Scan (Safety)
+      - name: Run Dependency Vulnerability Scan (Safety)
+        run: |
+          pip install safety
+          # Removed the bypass. If a CVE is found, this will instantly fail the build.
+          safety check -r temp_requirements.txt
+
+      # Step 6: Scan AST for security issues (Bandit)
+      - name: Run AST Vulnerability Scan (Bandit)
+        run: |
+          pip install bandit
+          bandit -r . -ll -ii -x ./.venv,./tests,./build,./dist
+
+      # Step 7: Generate Semgrep Rules File
+      - name: Create Custom Semgrep Rules
+        run: |
+          cat << 'EOF' > .github/semgrep-rules.yml
+          rules:
+            - id: strict-telemetry-no-secrets
+              message: "CRITICAL: Telemetry, event logging, or metric functions must not accept potentially sensitive parameters, PII, or auth credentials."
+              severity: ERROR
+              languages: [python]
+              patterns:
+                - pattern-either:
+                    - pattern: telemetry.send(..., $KEY=$VAL, ...)
+                    - pattern: telemetry.log(..., $KEY=$VAL, ...)
+                    - pattern: send_telemetry(..., $KEY=$VAL, ...)
+                    - pattern: track_event(..., $KEY=$VAL, ...)
+                    - pattern: logger.info(..., $KEY=$VAL, ...)
+                    - pattern: logger.debug(..., $KEY=$VAL, ...)
+                    - pattern: logger.warning(..., $KEY=$VAL, ...)
+                - metavariable-regex:
+                    metavariable: $KEY
+                    regex: '(?i)(token|auth|password|secret|email|key|jwt|apikey|api_key|credential|passwd|pass|session|bearer)'
+
+            - id: ban-unbounded-ai-retry-loop
+              message: "CRITICAL: AI Generation or Model polling loops must have concrete breaks. Unbounded 'while' conditions surrounding AI calls are banned."
+              severity: ERROR
+              languages: [python]
+              patterns:
+                - pattern-either:
+                    - pattern: |
+                        while True:
+                            ...
+                            $X.generate(...)
+                    - pattern: |
+                        while True:
+                            ...
+                            $X.chat(...)
+                    - pattern: |
+                        while 1:
+                            ...
+                            $X.generate(...)
+                    - pattern: |
+                        while 1:
+                            ...
+                            $X.chat(...)
+                - pattern-not:
+                    pattern: |
+                        while True:
+                            ...
+                            if $Y:
+                                break
+                            ...
+
+            - id: ban-budget-bypass-flags
+              message: "CRITICAL: Business logic safety guard bypass detected. Disabling billing metrics, quota limits, or pricing calculations is prohibited."
+              severity: ERROR
+              languages: [python]
+              patterns:
+                - pattern-either:
+                    - pattern: $X = True
+                    - pattern: $X = False
+                - metavariable-regex:
+                    metavariable: $X
+                    regex: '(?i)(bypass_budget|skip_quota|disable_limits|ignore_pricing|free_pass|override_limit|skip_billing)'
+          EOF
+
+      # Step 8: Run Semgrep using the generated file
+      - name: Custom Business Logic Scan (Semgrep)
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: .github/semgrep-rules.yml
+
+      # Step 9: Initialize Deep CodeQL Taint Analysis
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: 'python'
+          queries: security-extended,security-and-quality
+
+      # Step 10: Finalize and run the CodeQL evaluation engine
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/subsystem:sdk-core"
+
+      # Step 11: Print execution status logs
+      - name: Consolidated Audit Result
+        if: always()
+        run: |
+          echo "============================================="
+          echo "       STRICT SDK AUDIT PIPELINE COMPLETE     "
+          echo "============================================="
+          echo "Your code has successfully evaluated against:"
+          echo "1. TruffleHog (SaaS Credentials & Leaks)"
+          echo "2. Safety (Known vulnerable packages in environment)"
+          echo "3. Bandit (Insecure AST Python patterns)"
+          echo "4. Semgrep (Custom Loops, Telemetry and Quotas)"
+          echo "5. CodeQL (Data-flow Taints & System Security)"
+          echo "============================================="
